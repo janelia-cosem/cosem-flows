@@ -262,7 +262,7 @@ def ingest_source(ingest: VolumeIngest, save_plan: MultiscaleSavePlan, num_worke
     multi = multiscale(
         darr, reduction=reducer, scale_factors=scale_factors)
     multi = tz.get(multiscale_levels, multi)
-    level_names = [f"s{level}" for level in multiscale_levels]
+    level_names = [f"s{level}" for level in range(len(multi))]
     container_path = os.path.join(destination, ingest.storageSpec.containerPath) 
 
     if ingest.storageSpec.containerType == "n5":
