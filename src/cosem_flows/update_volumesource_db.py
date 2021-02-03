@@ -441,7 +441,7 @@ raw_sources = (
         ),
         pred = (makeVolumeSource(datasetName='jrc_cos7-11', volumeName='mito_pred',path='/nrs/cosem/cosem/training/v0003.2/setup26.1/COS7_Cell11_8x8x8nm/SIFTalignTrans-invert_it650000.n5/mito/', 
                 displaySettings=DisplaySettings(ContrastLimits(0,1), color=class_info['mito'][1]), transform=scale(.5, base_transforms['jrc_cos7-11']), contentType='prediction', description=class_info['mito'][0]),
-                makeVolumeSource(datasetName='jrc_cos7-11', volumeName='er_pred', path='/nearline/cosem/cosem/training/v0003.2/setup28/COS7_Cell11_8x8x8nm/SIFTalignTrans-invert_it825000.n5/er/',
+                makeVolumeSource(datasetName='jrc_cos7-11', volumeName='er_pred', path='/nrs/cosem/bennettd/scratch/jrc_cos7-11/SIFTalignTrans-invert_it825000.n5/er/',
                 displaySettings=DisplaySettings(ContrastLimits(0,1), color=class_info['er'][1]), transform=scale(.5, base_transforms['jrc_cos7-11']), contentType='prediction', description=class_info['er'][0])),
 
         lm=(PathWithID(urlpath='/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/PALM_488_transformed', id='er_palm'), 
