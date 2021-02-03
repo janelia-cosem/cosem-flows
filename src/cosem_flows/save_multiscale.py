@@ -139,22 +139,10 @@ ndim = 3
 debug_crop = None
 
 access_modes = ('write', 'metadata')
-read_chunks = (512,) * 3
-input_chunks = (256, -1, -1)
-output_chunks = (64,) * ndim
 scale_factors = (2,) * ndim
-
-
-def save_block(source, target, block_info=None):
-    chunk_origin = block_info[0]['array_location']
-    slices = tuple(slice(start, stop) for start, stop in chunk_origin) 
-    target[slices] = source
-    return np.expand_dims(0, range(source.ndim))
-
-
-def save_blockwise(source, target):
-    out_chunks = tuple((1,) * len(c) for c in source.chunks)
-    return da.map_blocks(save_block, source, target, chunks=out_chunks, dtype='int64')
+read_chunks = (512,) * 3
+input_chunks = (64, -1, -1) 
+output_chunks = (64,) * ndim
 
 
 # mongodb variables
@@ -163,6 +151,30 @@ pw = "root"
 addr = "cosem.int.janelia.org"
 db = "sources"
 mongo_addr = f"mongodb://{un}:{pw}@{addr}"
+
+# this stuff is due to get promoted to module
+import dask.array as da
+import zarr 
+import numpy as np
+import dask
+
+def store_block(source, target, block_info=None):
+    chunk_origin = block_info[0]['array-location']
+    slices = tuple(slice(start, stop) for start, stop in chunk_origin) 
+    target[slices] = source
+    return np.expand_dims(0, tuple(range(source.ndim)))
+
+
+def store_blocks(sources, targets):
+    result = []
+    if isinstance(sources, dask.array.core.Array):
+        sources = [sources]
+        targets = [targets]
+    for source, target in zip(sources, targets):
+        out_chunks = tuple((1,) * len(c) for c in source.chunks)
+        result.append(da.map_blocks(store_block, source, target, chunks=out_chunks, dtype='int64'))
+    return result  
+
 
 @dataclass
 class MultiscaleSavePlan:
@@ -250,7 +262,7 @@ def ingest_source(ingest: VolumeIngest, save_plan: MultiscaleSavePlan, num_worke
     multi = multiscale(
         darr, reduction=reducer, scale_factors=scale_factors)
     multi = tz.get(multiscale_levels, multi)
-    level_names = [f"s{level}" for level in multiscale_levels]
+    level_names = [f"s{level}" for level in range(len(multi))]
     container_path = os.path.join(destination, ingest.storageSpec.containerPath) 
 
     if ingest.storageSpec.containerType == "n5":
@@ -287,7 +299,8 @@ def ingest_source(ingest: VolumeIngest, save_plan: MultiscaleSavePlan, num_worke
             start = time.perf_counter()
             if parallel_reads:
                 cl.cluster.scale(num_workers)
-                result = cl.compute(da.store([m.chunk(input_chunks).data for m in multi], store_arrays, compute=False, lock=None)).result()
+                result = cl.compute(store_blocks([m.chunk(input_chunks).data for m in multi], store_arrays), sync=True)
+                #result = cl.compute(da.store([m.chunk(input_chunks).data for m in multi], store_arrays, compute=False, lock=None)).result()
             else:
                 result = sequential_multiscale(darr.data, store_arrays, reducer, scale_factors, multiscale_levels, slab_size=input_chunks, intermediate_chunks=(256,) * 3, client=cl, num_workers=num_workers, streaming=False)            
             print(f'Completed in {time.perf_counter() - start}s')
