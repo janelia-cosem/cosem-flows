@@ -25,11 +25,11 @@ from fibsem_tools.io import read
 
 # for volume names, which underscore-separated trailing values are suffixes:
 # e.g., 'mito_seg' has 'seg' as a suffix, while 'mito_er_contacts' has no suffix and is itself an entire token (for now)
-volume_name_suffixes = ('seg', 'pred')
+volume_name_suffixes = ("seg", "pred")
 
 # constants for getting stuff from google docs
-credfile = '/groups/scicompsoft/home/bennettd/certificates/cosem-db-1669c2970c7f.json'
-view_sheet_name = 'FIB-SEM dataset regions of interest'
+credfile = "/groups/scicompsoft/home/bennettd/certificates/cosem-db-1669c2970c7f.json"
+view_sheet_name = "FIB-SEM dataset regions of interest"
 view_sheet_page = 0
 
 
@@ -42,6 +42,7 @@ def make_segmentation_display_settings(path: str, prediction_colors: Dict[str, s
         contrastLimits=ContrastLimits(0, 1), color=prediction_colors[Path(path).name]
     )
 
+
 # groundtruth is .5 x the grid spacing of raw data
 ground_truth_scaling = 0.5
 base_res = 4.0
@@ -51,6 +52,7 @@ base_display = DisplaySettings(ContrastLimits(0, 1.0), "white", True)
 axes = ("z", "y", "x")
 units = ("nm",) * len(axes)
 translate = (0,) * len(axes)
+
 
 @dataclass
 class PathWithID:
@@ -68,6 +70,7 @@ def scale(
         tuple(np.multiply(factors, transform.scale)),
     )
 
+
 def infer_container_type(path: str) -> str:
     if Path(path).suffix == ".mrc":
         containerType = "mrc"
@@ -80,13 +83,16 @@ def infer_container_type(path: str) -> str:
 
     return containerType
 
-def get_classname_and_content_type(volume_name: str, suffixes: Sequence[str] = volume_name_suffixes) -> Tuple[str, str]:
+
+def get_classname_and_content_type(
+    volume_name: str, suffixes: Sequence[str] = volume_name_suffixes
+) -> Tuple[str, str]:
     # remove all whitespace before splitting on _
-    separated = ''.join(volume_name.split()).split("_")
+    separated = "".join(volume_name.split()).split("_")
     if separated[-1] in suffixes:
         class_name = separated[0]
     else:
-        class_name = volume_name 
+        class_name = volume_name
     content_type = ""
     if separated[-1] == "pred":
         content_type = "prediction"
@@ -141,8 +147,8 @@ class_info = {
     "cent-sdapp": ("Centrosome Subdistal Appendage", "white"),
     "chrom": ("Chromatin", "white"),
     "er": ("Endoplasmic Reticulum", "blue"),
-    "er_palm" : ("Light Microscopy (PALM) of ER", "white"),
-    "er_sim" : ("Light Microscopy (SIM) of the ER", "white"), 
+    "er_palm": ("Light Microscopy (PALM) of ER", "white"),
+    "er_sim": ("Light Microscopy (SIM) of the ER", "white"),
     "er-mem": ("Endoplasmic Reticulum membrane", "blue"),
     "eres": ("Endoplasmic Reticulum Exit Site", "white"),
     "eres-mem": ("Endoplasmic Reticulum Exit Site membrane", "white"),
@@ -161,8 +167,8 @@ class_info = {
     "mt-in": ("Microtubule inner", "orange"),
     "mt-out": ("Microtubule outer", "orange"),
     "mito": ("Mitochondria", "green"),
-    "mito_palm" : ("Light Microscopy (PALM) of Mitochondria", "white"),
-    "mito_sim" : ("Light Microscopy (SIM) of Mitochondria", "white"), 
+    "mito_palm": ("Light Microscopy (PALM) of Mitochondria", "white"),
+    "mito_sim": ("Light Microscopy (SIM) of Mitochondria", "white"),
     "mito-mem": ("Mitochondria membrane", "green"),
     "mito-ribo": ("Mitochondria Ribosome", "white"),
     "ne": ("Nuclear Envelope", "white"),
@@ -199,15 +205,15 @@ class_info = {
     "mito_skeleton-lsp": ("Mitochrondria Skeletons: Longest Shortest Path", "white"),
     "er_medial-surface": ("ER Medial Surface", "white"),
     "er_curvature": ("Reconstructed ER from Medial Surface with Curvature", "white"),
-    'ribo_classified' : ('Ribosomes classified by contact surface', 'white'),
+    "ribo_classified": ("Ribosomes classified by contact surface", "white"),
     "fibsem-uint8": ("FIB-SEM Data (compressed)", "white"),
     "fibsem-uint16": ("FIB-SEM Data (uncompressed)", "white"),
-    "gt": ("Ground truth", "white")
+    "gt": ("Ground truth", "white"),
 }
 
 
 def get_views_from_google_docs(credfile, spreadsheet_name, spreadsheet_page):
-    sheet = GoogleSheetScraper(credfile, mode='r').client.open(spreadsheet_name)
+    sheet = GoogleSheetScraper(credfile, mode="r").client.open(spreadsheet_name)
     # convert the sheet to a dataframe
     columns, *values = sheet.worksheets()[spreadsheet_page].get_all_values()
     df = pd.DataFrame(values, columns=columns)
@@ -216,30 +222,32 @@ def get_views_from_google_docs(credfile, spreadsheet_name, spreadsheet_page):
 
 def views_from_dataframe(df: pd.DataFrame):
     views = []
-    for idx,r in df.iterrows():
-        datasetName: str = r['Dataset name']
-        name: str = r['ROI Name (short)']
-        description: str = r['ROI Description (long)']
-        pos_str: str = r['XYZ Coordinates (nm)']
+    for idx, r in df.iterrows():
+        datasetName: str = r["Dataset name"]
+        name: str = r["ROI Name (short)"]
+        description: str = r["ROI Description (long)"]
+        pos_str: str = r["XYZ Coordinates (nm)"]
         pos: Optional[Sequence[int]]
-        scale_str: str = r['Cross-Section Scale']
+        scale_str: str = r["Cross-Section Scale"]
         scale: Optional[float]
 
         if len(pos_str) > 0:
-            pos = tuple(map(int, ''.join(pos_str.split()).split(',')))
+            pos = tuple(map(int, "".join(pos_str.split()).split(",")))
         else:
             pos = None
-        
-        if scale_str == '':
+
+        if scale_str == "":
             scale = None
         else:
             scale = float(scale_str)
 
-        layers: List[str] = r['Layers'].split(', ')
+        layers: List[str] = r["Layers"].split(", ")
         for l in layers:
             class_name, _ = get_classname_and_content_type(l)
             if class_name not in class_info:
-                print(f'Warning: layer name {l} from the view called {name} was not found in the list of layers.')
+                print(
+                    f"Warning: layer name {l} from the view called {name} was not found in the list of layers."
+                )
         views.append(DatasetView(datasetName, name, description, pos, scale, layers))
     return views
 
@@ -256,10 +264,10 @@ def makeVolumeSource(
     tags: Optional[Tuple[str]] = None,
 ) -> Optional[VolumeSource]:
 
-    try: 
+    try:
         arr: xarray.DataArray = DataArrayFromFile(path)
     except zarr.errors.PathNotFoundError as e:
-        print(f'Could not access an array at {path}')
+        print(f"Could not access an array at {path}")
         return None
 
     dimensions: Tuple[int, ...] = arr.shape
@@ -276,7 +284,8 @@ def makeVolumeSource(
         containerType=containerType,
         description=description,
         version=version,
-        tags=tags)
+        tags=tags,
+    )
 
 
 @dataclass
@@ -284,7 +293,7 @@ class RawSources:
     datasetName: str
     uint8: Optional[Tuple[str, DisplaySettings]] = None
     uint16: Optional[Tuple[str, DisplaySettings]] = None
-    pred: Optional[Union[Tuple[str, ...], Tuple[Optional[VolumeSource],...]]] = None
+    pred: Optional[Union[Tuple[str, ...], Tuple[Optional[VolumeSource], ...]]] = None
     groundTruth: Optional[str] = None
     meshes: Tuple[str, ...] = ()
     lm: Optional[Tuple[str, ...]] = None
@@ -329,7 +338,9 @@ raw_sources = (
             "/groups/cosem/cosem/ackermand/forDavis/jrc_hela-2/jrc_hela-2.n5"
         ),
         groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_hela-2/jrc_hela-2.n5/groundtruth_0003/",
-        meshes=dir_glob('/nrs/cosem/bennettd/s3/janelia-cosem/jrc_hela-2/neuroglancer/mesh')
+        meshes=dir_glob(
+            "/nrs/cosem/bennettd/s3/janelia-cosem/jrc_hela-2/neuroglancer/mesh"
+        ),
     ),
     RawSources(
         "jrc_hela-3",
@@ -384,9 +395,9 @@ raw_sources = (
         ),
         (
             f"{hess_raw_dir}/8. SUM159_WT45_Cell2_4x4x4nm/SUM159_WT45_Cell2_Cryo_20171009_4x4x4nm 16bit.mrc",
-            DisplaySettings(ContrastLimits(0.241, 0.334), invertColormap=True),            
+            DisplaySettings(ContrastLimits(0.241, 0.334), invertColormap=True),
         ),
-        groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_sum159-1/jrc_sum159-1.n5/groundtruth_0003/"
+        groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_sum159-1/jrc_sum159-1.n5/groundtruth_0003/",
     ),
     RawSources(
         "jrc_ctl-id8-1",
@@ -416,7 +427,7 @@ raw_sources = (
         "jrc_hela-1",
         (
             f"{cosem_raw_dir}/HeLa_Cell1_8x8x8nm/Aubrey_17-7_17_Cell1_D05-10_8x8x8nm.mrc",
-            DisplaySettings(ContrastLimits(.39, .56), invertColormap=True),
+            DisplaySettings(ContrastLimits(0.39, 0.56), invertColormap=True),
         ),
         pred=dir_glob(
             "/groups/cosem/cosem/ackermand/forDavis/jrc_hela-1/jrc_hela-1.n5"
@@ -434,22 +445,56 @@ raw_sources = (
     ),
     RawSources(
         "jrc_cos7-11",
-        None,
-        (
+        uint8=None,
+        uint16=(
             f"/nrs/cosem/bennettd/COS7_Cell11_8x8x8nm/SIFTalignTrans-invert.n5/volumes/raw/",
-            DisplaySettings(ContrastLimits(0, 1)),
+            DisplaySettings(ContrastLimits(0, 456 / (2 ** 16 - 1))),
         ),
-        pred = (makeVolumeSource(datasetName='jrc_cos7-11', volumeName='mito_pred',path='/nrs/cosem/cosem/training/v0003.2/setup26.1/COS7_Cell11_8x8x8nm/SIFTalignTrans-invert_it650000.n5/mito/', 
-                displaySettings=DisplaySettings(ContrastLimits(0,1), color=class_info['mito'][1]), transform=scale(.5, base_transforms['jrc_cos7-11']), contentType='prediction', description=class_info['mito'][0]),
-                makeVolumeSource(datasetName='jrc_cos7-11', volumeName='er_pred', path='/nrs/cosem/bennettd/scratch/jrc_cos7-11/SIFTalignTrans-invert_it825000.n5/er/',
-                displaySettings=DisplaySettings(ContrastLimits(0,1), color=class_info['er'][1]), transform=scale(.5, base_transforms['jrc_cos7-11']), contentType='prediction', description=class_info['er'][0])),
+        pred=(
+            makeVolumeSource(
+                datasetName="jrc_cos7-11",
+                volumeName="mito_pred",
+                path="/nrs/cosem/cosem/training/v0003.2/setup26.1/COS7_Cell11_8x8x8nm/SIFTalignTrans-invert_it650000.n5/mito/",
+                displaySettings=DisplaySettings(
+                    ContrastLimits(0, 1), color=class_info["mito"][1]
+                ),
+                transform=base_transforms["jrc_cos7-11"],
+                contentType="prediction",
+                description=class_info["mito"][0],
+            ),
+            makeVolumeSource(
+                datasetName="jrc_cos7-11",
+                volumeName="er_pred",
+                path="/nrs/cosem/bennettd/scratch/jrc_cos7-11/SIFTalignTrans-invert_it825000.n5/er/",
+                displaySettings=DisplaySettings(
+                    ContrastLimits(0, 1), color=class_info["er"][1]
+                ),
+                transform=base_transforms["jrc_cos7-11"],
+                contentType="prediction",
+                description=class_info["er"][0],
+            ),
+        ),
+        lm=(
+            PathWithID(
+                urlpath="/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/PALM_488_transformed",
+                id="er_palm",
+            ),
+            PathWithID(
+                urlpath="/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/PALM_532_transformed",
+                id="mito_palm",
+            ),
+            PathWithID(
+                urlpath="/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/SIM_488_transformed",
+                id="er_sim",
+            ),
+            PathWithID(
+                urlpath="/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/SIM_532_transformed",
+                id="mito_sim",
+            ),
+        ),
+    ),
+)
 
-        lm=(PathWithID(urlpath='/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/PALM_488_transformed', id='er_palm'), 
-            PathWithID(urlpath='/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/PALM_532_transformed', id='mito_palm'),
-            PathWithID(urlpath='/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/SIM_488_transformed', id='er_sim'),
-            PathWithID(urlpath='/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/SIM_532_transformed', id='mito_sim')
-        ),
-))
 
 def process_raw_sources(
     raw_sources: Sequence[RawSources], class_info: Mapping[str, Tuple[str, str]]
@@ -458,7 +503,6 @@ def process_raw_sources(
     for raw_source in raw_sources:
         datasetName = raw_source.datasetName
         base_transform = base_transforms[datasetName]
-
         uint8 = raw_source.uint8
         if uint8 is not None:
             volumeName = "fibsem-uint8"
@@ -506,13 +550,13 @@ def process_raw_sources(
                     displaySettings = DisplaySettings(
                         contrastLimits=ContrastLimits(0, 1), color=color
                     )
-                    
+
                     # the 8nm datasets yield predictions that are 4nm grid spacing
                     if base_transform.scale[0] == 8.0:
-                        transform = scale(.5, base_transform)
+                        transform = scale(0.5, base_transform)
                     else:
                         transform = base_transform
-                    
+
                     results.append(
                         makeVolumeSource(
                             datasetName,
@@ -544,30 +588,44 @@ def process_raw_sources(
         meshes = raw_source.meshes
         for mp in meshes:
             meshName = Path(mp).name
-            results.append(MeshSource(path=mp, 
-                                      name=meshName, 
-                                      datasetName=datasetName,
-                                      format='neuroglancer_precomputed_mesh'))
+            results.append(
+                MeshSource(
+                    path=mp,
+                    name=meshName,
+                    datasetName=datasetName,
+                    format="neuroglancer_precomputed_mesh",
+                )
+            )
         lm = raw_source.lm
         if lm is not None:
             for obj in lm:
                 volumeName = obj.id
                 lm_path = obj.urlpath
-                transform = base_transform
+                transform = SpatialTransform(
+                    base_transform.axes,
+                    base_transform.units,
+                    base_transform.translate,
+                    base_transform.scale,
+                )
                 try:
                     attrs = dict(read(lm_path).attrs)
-                    transform.scale = attrs['transform']['scale']
+                    transform.scale = attrs["transform"]["scale"]
                 except:
-                    print(f'Failed to infer scaling from data source at {lm_path}')
+                    print(f"Failed to infer scaling from data source at {lm_path}")
                 description, color = class_info[volumeName]
-                results.append(makeVolumeSource(
-                    datasetName=datasetName,
-                    volumeName=volumeName,
-                    path=lm_path,
-                    displaySettings=DisplaySettings(ContrastLimits(0,1), color=color),
-                    transform=transform,
-                    contentType='lm', 
-                    description=description))
+                results.append(
+                    makeVolumeSource(
+                        datasetName=datasetName,
+                        volumeName=volumeName,
+                        path=lm_path,
+                        displaySettings=DisplaySettings(
+                            ContrastLimits(0, 1), color=color
+                        ),
+                        transform=transform,
+                        contentType="lm",
+                        description=description,
+                    )
+                )
 
     return list(filter(lambda v: v is not None, results))
 
@@ -591,7 +649,7 @@ def upsert_sources_to_db(sources: Sequence[Union[VolumeSource, MeshSource]]):
             f"Object of type {type(f)} cannot be inserted into the database"
 
     # insert each element in the list into the `datasets` collection on our MongoDB instance
-    with MongoClient(f"mongodb://{un}:{pw}@{db_name}.int.janelia.org") as client:        
+    with MongoClient(f"mongodb://{un}:{pw}@{db_name}.int.janelia.org") as client:
         # this clearly sucks
         db = client["sources"]["VolumeSource"]
         operations = [
@@ -599,14 +657,14 @@ def upsert_sources_to_db(sources: Sequence[Union[VolumeSource, MeshSource]]):
             for doc in volumeSources
         ]
         db.bulk_write(operations)
-        
+
         db = client["sources"]["MeshSource"]
         operations = [
             ReplaceOne(filter={"_id": doc["_id"]}, replacement=doc, upsert=True)
             for doc in meshSources
         ]
         db.bulk_write(operations)
-        
+
         return True
 
 
@@ -628,21 +686,26 @@ def upsert_views_to_db(dataset_views: Sequence[DatasetView]):
         result = db.bulk_write(operations)
         return result
 
+
 @click.command()
 @click.option("-v", "--views", required=False, type=bool)
 @click.option("-s", "--sources", required=False, type=bool)
 def db_update_cli(views: bool, sources: bool):
     result = None
-    if sources:        
+    if sources:
         volume_sources = process_raw_sources(raw_sources, class_info)
-        print(f'Updating database with {len(volume_sources)} sources')
+        print(f"Updating database with {len(volume_sources)} sources")
         result = upsert_sources_to_db(volume_sources)
-    
+
     if views:
-        dataset_views = get_views_from_google_docs(credfile, view_sheet_name, view_sheet_page)
-        print(f'Updating view database with {len(dataset_views)} views')
-        result = upsert_views_to_db((dataset_views))        
-    
+        dataset_views = get_views_from_google_docs(
+            credfile, view_sheet_name, view_sheet_page
+        )
+        print(f"Updating view database with {len(dataset_views)} views")
+        result = upsert_views_to_db((dataset_views))
+
     return result
+
+
 if __name__ == "__main__":
-    db_update_cli()    
+    db_update_cli()
