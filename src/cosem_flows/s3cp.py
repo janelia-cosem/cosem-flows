@@ -7,6 +7,7 @@ from typing import Sequence, Optional, Dict, Any
 from dataclasses import dataclass
 from fibsem_tools.io.util import list_files_parallel
 from functools import partial
+
 STAGES = ("dev", "prod", "val")
 
 
@@ -18,7 +19,7 @@ def iterput(
     overwrite: bool = True,
 ):
     """
-    Given a sequence of sources, dests, and tags, save each source to dest with a tag.    
+    Given a sequence of sources, dests, and tags, save each source to dest with a tag.
     """
     fs = s3fs.S3FileSystem(profile=profile)
     if tags == None:
@@ -36,7 +37,7 @@ def iterput(
             if tag is not None and wrote:
                 fs.put_tags(dest, tag)
         except OSError as err:
-            print(f'Something went wrong copying {source} to {dest}: {err}')
+            print(f"Something went wrong copying {source} to {dest}: {err}")
     return True
 
 
@@ -45,10 +46,10 @@ def s3put(
     source_path: str,
     endswith: Optional[str] = "",
     tags: Optional[Dict] = None,
-    partition_size: Optional[int]=None,
+    partition_size: Optional[int] = None,
 ):
     sources = tuple(map(str, list_files_parallel(source_path)))
-    
+
     dests = tuple(
         str(Path(dest_root) / Path(f).relative_to(source_path)) for f in sources
     )
@@ -99,16 +100,19 @@ class TransferPlan:
     source_root: str
     profile: str
     partition_size: int = 1000
-    
+
     def prepare_source(self, source_file: str):
-        return f'{self.destination}/{Path(source_file).relative_to(self.source_root)}'
-    
-    def prepare_transfer(self, sources: Sequence[str],  overwrite: bool):
+        return f"{self.destination}/{Path(source_file).relative_to(self.source_root)}"
+
+    def prepare_transfer(self, sources: Sequence[str], overwrite: bool):
         source_bag = bag.from_sequence(sources, partition_size=self.partition_size)
         dest_bag = source_bag.map(self.prepare_source)
-        result = bag.map_partitions(partial(iterput, profile=self.profile, overwrite=overwrite), source_bag, dest_bag)
+        result = bag.map_partitions(
+            partial(iterput, profile=self.profile, overwrite=overwrite),
+            source_bag,
+            dest_bag,
+        )
         return result
-   
 
 
 if __name__ == "__main__":
