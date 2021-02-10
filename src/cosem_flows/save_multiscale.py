@@ -102,7 +102,7 @@ def sequential_multiscale(
     intermediate_chunks: Tuple[int, ...],
     client: distributed.Client,
     num_workers: int,
-    streaming=False,
+    streaming=True,
 ) -> List[None]:
     """
     Load slabs of an array into local memory, then create a dask array and rechunk that dask array, then store into
@@ -111,14 +111,14 @@ def sequential_multiscale(
     results = []
     futures = []
     slices = da.core.slices_from_chunks(source.rechunk(slab_size).chunks)
-    client.cluster.scale(num_workers)
 
     for idx, sl in tqdm(tuple(enumerate(slices))):
+        client.cluster.scale(num_workers)
         print(f"Reading in data subrange with shape {source[sl].shape}")
         arr_in = source[sl].compute(scheduler="threads")
         darr_in = DataArray(da.from_array(arr_in, chunks=intermediate_chunks))
         valid_depth = get_downscale_depth(darr_in.shape, scale_factors)
-        levels = np.array(multiscale_levels)[np.array(multiscale_levels) < valid_depth]
+        levels = np.array(multiscale_levels)[np.array(multiscale_levels) < valid_depth].tolist()
         if valid_depth == 0:
             multi = [darr_in]
         else:
@@ -138,13 +138,9 @@ def sequential_multiscale(
             compute=False,
             lock=None,
         )
-        if streaming:
-            futures.append(client.compute(store_op))
-        else:
-            results.extend(client.compute(store_op).result())
-    if streaming:
-        results = client.gather(futures)
-    client.cluster.scale(0)
+
+        results.extend(client.compute(store_op).result())
+        client.cluster.scale(0)
     return results
 
 
