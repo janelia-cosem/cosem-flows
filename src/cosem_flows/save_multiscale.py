@@ -428,6 +428,7 @@ def save_multiscale(
     reduction: str,
     levels: Sequence[int],
     scale_factors: Sequence[int],
+    read_chunks: Sequence[int],
     input_chunks: Sequence[int],
     output_chunks: Sequence[int],
     num_workers: int,
@@ -521,6 +522,7 @@ def save_multiscale(
 @click.option("--reduction", required=True, type=str)
 @click.option("--levels", required=True, cls=PythonLiteralOption, default='[]')
 @click.option("--scale-factors", required=True, cls=PythonLiteralOption, default='[]')
+@click.option("--read-chunks", required=True, cls=PythonLiteralOption, default='[]')
 @click.option("--input-chunks", required=True, cls=PythonLiteralOption, default='[]')
 @click.option("--output-chunks", required=True, cls=PythonLiteralOption, default='[]')
 @click.option("--num-workers", required=True, cls=PythonLiteralOption, default='[]')
@@ -533,6 +535,7 @@ def save_multiscale_cli(
     reduction: str,
     levels: Sequence[int],
     scale_factors: Sequence[int],
+    read_chunks: Sequence[int],
     input_chunks: Sequence[int],
     output_chunks: Sequence[int],
     num_workers: int,
@@ -546,6 +549,7 @@ def save_multiscale_cli(
         reduction=reduction,
         levels=levels,
         scale_factors=scale_factors,
+        read_chunks=read_chunks,
         input_chunks=input_chunks,
         output_chunks=output_chunks,
         num_workers=num_workers,
