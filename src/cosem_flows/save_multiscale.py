@@ -456,6 +456,7 @@ def save_multiscale(
                 multi, paths=level_names
             ).asdict(),
             **neuroglancer.GroupMeta.fromDataArraySequence(multi).asdict(),
+            **{'source': source}
         }
         array_attrs = [cosem_ome.ArrayMeta.fromDataArray(m).asdict() for m in multi]
         store_group, store_arrays = populate_group(
