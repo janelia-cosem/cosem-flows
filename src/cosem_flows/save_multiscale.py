@@ -214,24 +214,47 @@ import dask.array as da
 import zarr
 import numpy as np
 import dask
+from dask.array.optimization import fuse_slice
 
-
-def store_block(source, target, block_info=None):
+def store_block(source, target, region, block_info=None):
     chunk_origin = block_info[0]["array-location"]
     slices = tuple(slice(start, stop) for start, stop in chunk_origin)
+    if region:
+        slices = fuse_slice(region, slices)
     target[slices] = source
     return np.expand_dims(0, tuple(range(source.ndim)))
 
 
-def store_blocks(sources, targets):
+def store_blocks(sources, targets, regions=None):
     result = []
+    
     if isinstance(sources, dask.array.core.Array):
         sources = [sources]
         targets = [targets]
-    for source, target in zip(sources, targets):
+    
+    
+    if len(sources) != len(targets):
+        raise ValueError(
+            "Different number of sources [%d] and targets [%d]"
+            % (len(sources), len(targets))
+        )
+
+    if isinstance(regions, tuple) or regions is None:
+        regions = [regions]
+
+    if len(sources) > 1 and len(regions) == 1:
+        regions *= len(sources)
+
+    if len(sources) != len(regions):
+        raise ValueError(
+            "Different number of sources [%d] and targets [%d] than regions [%d]"
+            % (len(sources), len(targets), len(regions))
+        )
+            
+    for source, target, region in zip(sources, targets, regions):
         out_chunks = tuple((1,) * len(c) for c in source.chunks)
         result.append(
-            da.map_blocks(store_block, source, target, chunks=out_chunks, dtype="int64")
+            da.map_blocks(store_block, source, target, region, chunks=out_chunks, dtype="int64")
         )
     return result
 
@@ -424,12 +447,12 @@ def save_multiscale(
     reduction: str,
     levels: Sequence[int],
     scale_factors: Sequence[int],
-    read_chunks: Sequence[int],
     input_chunks: Sequence[int],
     output_chunks: Sequence[int],
     num_workers: int,
     distributed_loading: bool = True,
     jpeg_quality=90,
+    scale: Optional[Sequence[int]] = None
 ):
     from fibsem_tools.io.util import split_path_at_suffix
     from fibsem_tools.io import read_xarray
@@ -439,8 +462,16 @@ def save_multiscale(
     )
 
     mutation = mutations.get(mutation, lambda v: v)
-    darr: DataArray = mutation(read_xarray(source, chunks=read_chunks))
-
+    darr: DataArray = mutation(read_xarray(source, chunks='auto'))
+    if scale: 
+        print('Overriding inferred coordinates with user-supplied scaling...')
+        new_coords = {}
+        for idx, kvp in enumerate(darr.coords.items()):
+            key, val = kvp
+            new_coord = DataArray(np.arange(len(val)) * scale[idx], dims=key, attrs=val.attrs)
+            new_coords[key] = new_coord
+        darr = darr.assign_coords(new_coords)
+    
     print(f"Source data: {darr.data}, found at {source}")
     reducer = reducers[reduction]
     multi = multiscale(darr, reduction=reducer, scale_factors=scale_factors)
@@ -519,12 +550,12 @@ def save_multiscale(
 @click.option("--reduction", required=True, type=str)
 @click.option("--levels", required=True, cls=PythonLiteralOption, default='[]')
 @click.option("--scale-factors", required=True, cls=PythonLiteralOption, default='[]')
-@click.option("--read-chunks", required=True, cls=PythonLiteralOption, default='[]')
 @click.option("--input-chunks", required=True, cls=PythonLiteralOption, default='[]')
 @click.option("--output-chunks", required=True, cls=PythonLiteralOption, default='[]')
 @click.option("--num-workers", required=True, cls=PythonLiteralOption, default='[]')
 @click.option("--jpeg-quality", required=False, type=int, default=90)
 @click.option("--distributed-loading", required=False, type=bool, default=True)
+@click.option("--scale", required=False, cls=PythonLiteralOption, default='[]')
 def save_multiscale_cli(
     source: str,
     target: str,
@@ -532,12 +563,12 @@ def save_multiscale_cli(
     reduction: str,
     levels: Sequence[int],
     scale_factors: Sequence[int],
-    read_chunks: Sequence[int],
     input_chunks: Sequence[int],
     output_chunks: Sequence[int],
     num_workers: int,
     jpeg_quality: int,
     distributed_loading: bool,
+    scale: Sequence[int]
 ):
     save_multiscale(
         source=source,
@@ -546,12 +577,12 @@ def save_multiscale_cli(
         reduction=reduction,
         levels=levels,
         scale_factors=scale_factors,
-        read_chunks=read_chunks,
         input_chunks=input_chunks,
         output_chunks=output_chunks,
         num_workers=num_workers,
         distributed_loading=distributed_loading,
         jpeg_quality=jpeg_quality,
+        scale=scale
     )
 
 
