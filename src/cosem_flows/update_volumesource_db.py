@@ -7,7 +7,7 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Union, Mapping
 from dataclasses import asdict
-from fibsem_tools.attrs import (
+from cosem_flows.attrs import (
     VolumeSource,
     DisplaySettings,
     ContrastLimits,
@@ -20,8 +20,7 @@ from sheetscrape.scraper import GoogleSheetScraper
 import pandas as pd
 import zarr
 import click
-from fibsem_tools.io import DataArrayFromFile
-from fibsem_tools.io import read
+from fibsem_tools.io import read, read_xarray
 
 # for volume names, which underscore-separated trailing values are suffixes:
 # e.g., 'mito_seg' has 'seg' as a suffix, while 'mito_er_contacts' has no suffix and is itself an entire token (for now)
@@ -265,7 +264,7 @@ def makeVolumeSource(
 ) -> Optional[VolumeSource]:
 
     try:
-        arr: xarray.DataArray = DataArrayFromFile(path)
+        arr: xarray.DataArray = read_xarray(path)
     except zarr.errors.PathNotFoundError as e:
         print(f"Could not access an array at {path}")
         return None
@@ -646,26 +645,22 @@ def upsert_sources_to_db(sources: Sequence[Union[VolumeSource, MeshSource]]):
             f.update({"_id": f["datasetName"] + "/" + f["name"]})
             meshSources.append(f)
         else:
-            f"Object of type {type(f)} cannot be inserted into the database"
-
+            raise ValueError(f"Object of type {type(s)} cannot be inserted into the database")
     # insert each element in the list into the `datasets` collection on our MongoDB instance
     with MongoClient(f"mongodb://{un}:{pw}@{db_name}.int.janelia.org") as client:
         # this clearly sucks
-        db = client["sources"]["VolumeSource"]
-        operations = [
-            ReplaceOne(filter={"_id": doc["_id"]}, replacement=doc, upsert=True)
-            for doc in volumeSources
-        ]
-        db.bulk_write(operations)
-
-        db = client["sources"]["MeshSource"]
-        operations = [
-            ReplaceOne(filter={"_id": doc["_id"]}, replacement=doc, upsert=True)
-            for doc in meshSources
-        ]
-        db.bulk_write(operations)
-
-        return True
+        db_names = 'VolumeSource', 'MeshSource'
+        for db_name, _sources in zip(db_names, [volumeSources, meshSources]):
+            print(f'Upserting {len(_sources)} instances of {db_name}')
+            if len(_sources) > 0:
+                db = client["sources"][db_name]
+                operations = [
+                    ReplaceOne(filter={"_id": doc["_id"]}, replacement=doc, upsert=True)
+                    for doc in _sources
+                ]
+                db.bulk_write(operations)
+    
+    return True
 
 
 def upsert_views_to_db(dataset_views: Sequence[DatasetView]):
