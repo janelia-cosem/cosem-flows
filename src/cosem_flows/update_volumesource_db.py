@@ -140,6 +140,56 @@ base_transforms = {
     "jrc_cos7-11": SpatialTransform(axes, units, translate, (base_res * 2,) * 3),
 }
 
+
+@dataclass
+class EMDisplaySettings:
+    uint8: Optional[DisplaySettings] = None
+    uint16: Optional[DisplaySettings] = None
+
+
+em_display_settings = {}
+em_display_settings["jrc_hela-4"] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.57, end=0.805)),
+    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.275, end=0.355), invertLUT=True),
+)
+em_display_settings["jrc_mus-pancreas-1"] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.7176, end=0.8117)),
+    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.108, end=0.199), invertLUT=True),
+)
+em_display_settings["jrc_hela-2"] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.415, end=0.716)),
+    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.373, end=0.52), invertLUT=True),
+)
+em_display_settings["jrc_hela-3"] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.216, end=0.944)),
+    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.313, end=0.409), invertLUT=True),
+)
+em_display_settings["jrc_jurkat-1"] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.826, end=0.924)),
+    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.297, end=0.402), invertLUT=True),
+)
+em_display_settings["jrc_macrophage-2"] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.843, end=0.917)),
+    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.297, end=0.436), invertLUT=True),
+)
+em_display_settings["jrc_sum159-1"] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.706, end=0.864)),
+    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.241, end=0.334), invertLUT=True),
+)
+em_display_settings["jrc_ctl-id8-1"] = EMDisplaySettings(
+    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.166, end=0.265), invertLUT=True)
+)
+em_display_settings["jrc_fly-fsb-1"] = EMDisplaySettings(
+    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.03433, end=0.0509), invertLUT=True)
+)
+em_display_settings["jrc_fly-acc-calyx"] = EMDisplaySettings(
+    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.02499, end=0.04994), invertLUT=True)
+)
+
+em_display_settings['jrc_hela-1'] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.39, end=0.56), invertLUT=True),
+)
+
 class_info = {
     "cent": ("Centrosome", "white"),
     "cent-dapp": ("Centrosome Distal Appendage", "white"),
@@ -300,6 +350,8 @@ class RawSources:
 
 hess_raw_dir = "/groups/hess/hesslab/HighResPaper_rawdata"
 cosem_raw_dir = "/groups/cosem/cosem/data"
+prediction_dir = "/groups/cosem/cosem/ackermand/forDavis/renumbered"
+
 raw_sources = (
     RawSources(
         "jrc_hela-4",
@@ -333,13 +385,9 @@ raw_sources = (
             f"{hess_raw_dir}/2. HeLa2_Aubrey_17-7_17_Cell2_4x4x4nm/Aubrey_17-7_17_Cell2 4x4x4nm 16bit.mrc",
             DisplaySettings(ContrastLimits(0.373, 0.52), invertColormap=True),
         ),
-        pred=dir_glob(
-            "/groups/cosem/cosem/ackermand/forDavis/jrc_hela-2/jrc_hela-2.n5"
-        ),
+        pred=dir_glob(os.path.join(prediction_dir, "jrc_hela-2/jrc_hela-2.n5")),
         groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_hela-2/jrc_hela-2.n5/groundtruth_0003/",
-        meshes=dir_glob(
-            "/nrs/cosem/bennettd/s3/janelia-cosem/jrc_hela-2/neuroglancer/mesh"
-        ),
+        meshes=dir_glob(os.path.join(prediction_dir, "jrc_hela-2/neuroglancer/mesh")),
     ),
     RawSources(
         "jrc_hela-3",
@@ -352,7 +400,7 @@ raw_sources = (
             DisplaySettings(ContrastLimits(0.313, 0.409), invertColormap=True),
         ),
         pred=dir_glob(
-            "/groups/cosem/cosem/ackermand/forDavis/jrc_hela-3/jrc_hela-3.n5"
+            os.path.join(prediction_dir, "jrc_hela-3/jrc_hela-3.n5"),
         ),
         groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_hela-3/jrc_hela-3.n5/groundtruth_0003/",
     ),
@@ -635,31 +683,30 @@ def upsert_sources_to_db(sources: Sequence[Union[VolumeSource, MeshSource]]):
     db_name = "cosem"
     # use the datasetName/volumeName as the id for the document
     volumeSources = []
-    meshSources = []
     for s in sources:
         f = asdict(s)
         if isinstance(s, VolumeSource):
             f.update({"_id": f["datasetName"] + "/" + f["name"]})
             volumeSources.append(f)
-        elif isinstance(s, MeshSource):
-            f.update({"_id": f["datasetName"] + "/" + f["name"]})
-            meshSources.append(f)
         else:
-            raise ValueError(f"Object of type {type(s)} cannot be inserted into the database")
+            raise ValueError(
+                f"Object of type {type(s)} cannot be inserted into the database"
+            )
     # insert each element in the list into the `datasets` collection on our MongoDB instance
     with MongoClient(f"mongodb://{un}:{pw}@{db_name}.int.janelia.org") as client:
         # this clearly sucks
-        db_names = 'VolumeSource', 'MeshSource'
-        for db_name, _sources in zip(db_names, [volumeSources, meshSources]):
-            print(f'Upserting {len(_sources)} instances of {db_name}')
-            if len(_sources) > 0:
-                db = client["sources"][db_name]
-                operations = [
-                    ReplaceOne(filter={"_id": doc["_id"]}, replacement=doc, upsert=True)
-                    for doc in _sources
-                ]
-                db.bulk_write(operations)
-    
+        db_name = "VolumeSource"
+        _sources = volumeSources
+
+        print(f"Upserting {len(_sources)} instances of {db_name}")
+        if len(_sources) > 0:
+            db = client["sources"][db_name]
+            operations = [
+                ReplaceOne(filter={"_id": doc["_id"]}, replacement=doc, upsert=True)
+                for doc in _sources
+            ]
+            db.bulk_write(operations)
+
     return True
 
 
