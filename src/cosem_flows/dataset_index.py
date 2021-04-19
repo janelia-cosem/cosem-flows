@@ -1,5 +1,5 @@
 from .save_multiscale import typed_list_from_mongodb
-from fibsem_tools.attrs import DatasetView, VolumeSource, DatasetIndex, MeshSource
+from fibsem_metadata.index import DatasetView, VolumeSource, DatasetIndex, MeshSource
 from pathlib import Path
 from fsspec import filesystem
 from typing import List
@@ -27,7 +27,7 @@ db = "sources"
 mongo_addr = f"mongodb://{un}:{pw}@{addr}"
 
 
-def build_index(URL: str):
+def build_index(URL: str, any_volumes: bool =True):
     try:
         fs_protocol, root = URL.split("://")
     except ValueError:

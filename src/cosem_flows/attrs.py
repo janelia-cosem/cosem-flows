@@ -10,7 +10,7 @@ DTYPE_FORMATS = {"uint16": "n5", "uint8": "precomputed", "uint64": "n5"}
 
 class MeshTypeEnum(str, Enum):
     neuroglancer_legacy_mesh = "neuroglancer_legacy_mesh"
-    neuroglancer_precomputed_mesh = "neuroglancer_precomputed_mesh"
+    neuroglancer_multilod_draco = "neuroglancer_multilod_draco"
 
 
 class ArrayContainerTypeEnum(str, Enum):
@@ -21,11 +21,12 @@ class ArrayContainerTypeEnum(str, Enum):
     hdf5 = "hdf5"
     tif = "tif"
 
+
 class ContentTypeEnum(str, Enum):
-    em = "em" 
-    lm = "lm", 
-    prediction = "prediction",
-    segmentationm = "segmentation", 
+    em = "em"
+    lm = "lm"
+    prediction = "prediction"
+    segmentationm = "segmentation"
     analysis = "analysis"
 
 
@@ -33,17 +34,18 @@ class ContrastLimits(BaseModel):
     """
     Metadata for contrast limits. Currently these values are in normalized units, i.e. drawn from the interval [0,1]
     """
+
     start: float
     end: float
     min: float = 0.0
     max: float = 1.0
-    
 
 
 class DisplaySettings(BaseModel):
     """
     Metadata for display settings
     """
+
     contrastLimits: ContrastLimits
     color: str = "white"
     invertLUT: bool = False

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Tuple, Optional, List, TypeVar, Sequence, Union
+from typing import Any, Callable, Dict, Tuple, Optional, List, TypeVar, Sequence
 from fibsem_tools.io.io import access_precomputed, read_xarray
 import numpy as np
 import os
@@ -9,12 +9,7 @@ from xarray_multiscale.reducers import mode
 import tensorstore as ts
 from xarray import DataArray
 from distributed import Client
-from cosem_flows.attrs import (
-    VolumeSource,
-    VolumeIngest,
-    MultiscaleSpec,
-    VolumeStorageSpec,
-)
+from .attrs import VolumeSource
 import distributed
 import time
 from tqdm import tqdm
@@ -26,14 +21,14 @@ import dask.array as da
 import toolz as tz
 
 import ast
-class PythonLiteralOption(click.Option):
 
+
+class PythonLiteralOption(click.Option):
     def type_cast_value(self, ctx, value):
         try:
             return ast.literal_eval(value)
         except:
             raise click.BadParameter(value)
-
 
 
 def downscale_slices(
@@ -118,7 +113,9 @@ def sequential_multiscale(
         arr_in = source[sl].compute(scheduler="threads")
         darr_in = DataArray(da.from_array(arr_in, chunks=intermediate_chunks))
         valid_depth = get_downscale_depth(darr_in.shape, scale_factors)
-        levels = np.array(multiscale_levels)[np.array(multiscale_levels) < valid_depth].tolist()
+        levels = np.array(multiscale_levels)[
+            np.array(multiscale_levels) < valid_depth
+        ].tolist()
         if valid_depth == 0:
             multi = [darr_in]
         else:
@@ -216,6 +213,7 @@ import numpy as np
 import dask
 from dask.array.optimization import fuse_slice
 
+
 def store_block(source, target, region, block_info=None):
     chunk_origin = block_info[0]["array-location"]
     slices = tuple(slice(start, stop) for start, stop in chunk_origin)
@@ -227,12 +225,11 @@ def store_block(source, target, region, block_info=None):
 
 def store_blocks(sources, targets, regions=None):
     result = []
-    
+
     if isinstance(sources, dask.array.core.Array):
         sources = [sources]
         targets = [targets]
-    
-    
+
     if len(sources) != len(targets):
         raise ValueError(
             "Different number of sources [%d] and targets [%d]"
@@ -250,11 +247,13 @@ def store_blocks(sources, targets, regions=None):
             "Different number of sources [%d] and targets [%d] than regions [%d]"
             % (len(sources), len(targets), len(regions))
         )
-            
+
     for source, target, region in zip(sources, targets, regions):
         out_chunks = tuple((1,) * len(c) for c in source.chunks)
         result.append(
-            da.map_blocks(store_block, source, target, region, chunks=out_chunks, dtype="int64")
+            da.map_blocks(
+                store_block, source, target, region, chunks=out_chunks, dtype="int64"
+            )
         )
     return result
 
@@ -282,64 +281,9 @@ def typed_list_from_mongodb(
     return results
 
 
-def makeVolumeIngest(source: VolumeSource, output_path: str) -> VolumeIngest:
-    mutation: Optional[str] = None
-    reduction = "mean"
-    dataPath = ""
-    containerPath = ""
-
-    if source.dataType == "uint8" and source.contentType == "em":
-        containerType = "precomputed"
-        dataPath = ""
-        containerPath = os.path.join(
-            output_path,
-            source.datasetName,
-            "neuroglancer",
-            "em",
-            f"{source.name}.precomputed",
-        )
-    else:
-        containerType = "n5"
-        containerPath = os.path.join(
-            output_path, source.datasetName, f"{source.datasetName}.n5"
-        )
-        if source.contentType == "em":
-            content_dir = "em"
-        elif source.contentType == "lm":
-            content_dir = "lm"
-        elif source.contentType in {"prediction", "gt", "segmentation", "analysis"}:
-            content_dir = "labels"
-        else:
-            raise ValueError(
-                f"content type {source.contentType} cannot be dispatched to a path"
-            )
-        dataPath = os.path.join(content_dir, source.name)
-    storageSpec = VolumeStorageSpec("file", containerType, containerPath, dataPath)
-
-    if source.contentType != "em" and source.datasetName in (
-        "jrc_hela-1",
-        "jrc_hela-2",
-        "jrc_hela-3",
-        "jrc_jurkat-1",
-        "jrc_macrophage-2",
-    ):
-        mutation = "flip_y"
-
-    if source.contentType == "segmentation":
-        reduction = "mode"
-    if source.datasetName in ("jrc_cos7-11") and source.contentType == "prediction":
-        # these prediction volumes are 4nm grid spacing for 8nm data, so we don't need s0
-        levels = list(range(1, 7))
-    else:
-        levels = list(range(0, 6))
-    multiscaleSpec = MultiscaleSpec(reduction, levels, (2, 2, 2))
-
-    ingest = VolumeIngest(source, multiscaleSpec, storageSpec, mutation)
-    return ingest
-
 
 def ingest_source(
-    ingest: VolumeIngest,
+    ingest: Any,
     save_plan: MultiscaleSavePlan,
     num_workers: int,
     destination: str,
@@ -452,7 +396,7 @@ def save_multiscale(
     num_workers: int,
     distributed_loading: bool = True,
     jpeg_quality=90,
-    scale: Optional[Sequence[int]] = None
+    scale: Optional[Sequence[int]] = None,
 ):
     from fibsem_tools.io.util import split_path_at_suffix
     from fibsem_tools.io import read_xarray
@@ -462,22 +406,24 @@ def save_multiscale(
     )
 
     mutation = mutations.get(mutation, lambda v: v)
-    darr: DataArray = mutation(read_xarray(source, chunks='auto'))
-    if scale: 
-        print('Overriding inferred coordinates with user-supplied scaling...')
+    darr: DataArray = mutation(read_xarray(source, chunks="auto"))
+    if scale:
+        print("Overriding inferred coordinates with user-supplied scaling...")
         new_coords = {}
         for idx, kvp in enumerate(darr.coords.items()):
             key, val = kvp
-            new_coord = DataArray(np.arange(len(val)) * scale[idx], dims=key, attrs=val.attrs)
+            new_coord = DataArray(
+                np.arange(len(val)) * scale[idx], dims=key, attrs=val.attrs
+            )
             new_coords[key] = new_coord
         darr = darr.assign_coords(new_coords)
-    
+
     print(f"Source data: {darr.data}, found at {source}")
     reducer = reducers[reduction]
     multi = multiscale(darr, reduction=reducer, scale_factors=scale_factors)
     multi = tz.get(levels, multi)
     level_names = [f"s{level}" for level in range(len(multi))]
-    path, key, suffix = split_path_at_suffix(target, ('.n5', '.precomputed'))
+    path, key, suffix = split_path_at_suffix(target, (".n5", ".precomputed"))
 
     if suffix == ".n5":
         print(f"Preparing the store {target}")
@@ -487,7 +433,7 @@ def save_multiscale(
                 multi, paths=level_names
             ).asdict(),
             **neuroglancer.GroupMeta.fromDataArraySequence(multi).asdict(),
-            **{'source': source}
+            **{"source": source},
         }
         array_attrs = [cosem_ome.ArrayMeta.fromDataArray(m).asdict() for m in multi]
         store_group, store_arrays = populate_group(
@@ -548,14 +494,14 @@ def save_multiscale(
 @click.option("--target", required=True, type=str)
 @click.option("--mutation", required=True, type=str)
 @click.option("--reduction", required=True, type=str)
-@click.option("--levels", required=True, cls=PythonLiteralOption, default='[]')
-@click.option("--scale-factors", required=True, cls=PythonLiteralOption, default='[]')
-@click.option("--input-chunks", required=True, cls=PythonLiteralOption, default='[]')
-@click.option("--output-chunks", required=True, cls=PythonLiteralOption, default='[]')
-@click.option("--num-workers", required=True, cls=PythonLiteralOption, default='[]')
+@click.option("--levels", required=True, cls=PythonLiteralOption, default="[]")
+@click.option("--scale-factors", required=True, cls=PythonLiteralOption, default="[]")
+@click.option("--input-chunks", required=True, cls=PythonLiteralOption, default="[]")
+@click.option("--output-chunks", required=True, cls=PythonLiteralOption, default="[]")
+@click.option("--num-workers", required=True, cls=PythonLiteralOption, default="[]")
 @click.option("--jpeg-quality", required=False, type=int, default=90)
 @click.option("--distributed-loading", required=False, type=bool, default=True)
-@click.option("--scale", required=False, cls=PythonLiteralOption, default='[]')
+@click.option("--scale", required=False, cls=PythonLiteralOption, default="[]")
 def save_multiscale_cli(
     source: str,
     target: str,
@@ -568,7 +514,7 @@ def save_multiscale_cli(
     num_workers: int,
     jpeg_quality: int,
     distributed_loading: bool,
-    scale: Sequence[int]
+    scale: Sequence[int],
 ):
     save_multiscale(
         source=source,
@@ -582,7 +528,7 @@ def save_multiscale_cli(
         num_workers=num_workers,
         distributed_loading=distributed_loading,
         jpeg_quality=jpeg_quality,
-        scale=scale
+        scale=scale,
     )
 
 
@@ -609,5 +555,5 @@ def ingest_source_cli(query: str, destination: str, mode: str, workers: int):
 
 
 if __name__ == "__main__":
-    #ingest_source_cli()
+    # ingest_source_cli()
     save_multiscale_cli()

@@ -1,26 +1,34 @@
-from os import name
-
 from typing import Sequence
 from dataclasses import dataclass
+from pydantic.errors import NoneIsAllowedError
+import warnings
 import xarray
 import numpy as np
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Union, Mapping
 from dataclasses import asdict
-from cosem_flows.attrs import (
-    VolumeSource,
-    DisplaySettings,
-    ContrastLimits,
-    DatasetView,
-    MeshSource,
-)
-from xarray_multiscale.metadata.util import SpatialTransform
+import zarr
+from glob import glob
 from pymongo import MongoClient, ReplaceOne
 from sheetscrape.scraper import GoogleSheetScraper
 import pandas as pd
-import zarr
+import os
 import click
 from fibsem_tools.io import read, read_xarray
+from fibsem_metadata.classes import ClassMetadata, class_info
+from fibsem_metadata.index import (
+    DisplaySettings,
+    ContrastLimits,
+    VolumeSource,
+    MeshSource,
+    DatasetView,
+)
+from fibsem_metadata.multiscale.cosem import SpatialTransform
+from pydantic import BaseModel, FilePath, DirectoryPath
+
+hess_raw_dir = "/groups/hess/hesslab/HighResPaper_rawdata"
+cosem_raw_dir = "/groups/cosem/cosem/data"
+prediction_dir = "/groups/cosem/cosem/ackermand/forDavis/renumbered"
 
 # for volume names, which underscore-separated trailing values are suffixes:
 # e.g., 'mito_seg' has 'seg' as a suffix, while 'mito_er_contacts' has no suffix and is itself an entire token (for now)
@@ -38,7 +46,22 @@ def dir_glob(path: str) -> Tuple[str, ...]:
 
 def make_segmentation_display_settings(path: str, prediction_colors: Dict[str, str]):
     return DisplaySettings(
-        contrastLimits=ContrastLimits(0, 1), color=prediction_colors[Path(path).name]
+        contrastLimits=ContrastLimits(start=0, end=1),
+        color=prediction_colors[Path(path).name],
+    )
+
+
+def get_neuroglancer_legacy_mesh_ids(path: str):
+    """
+    Given a path to a directory with files called 1.ngmesh, 2.ngmesh, etc, return (1,2,...)
+    """
+    return sorted(
+        tuple(
+            map(
+                lambda v: int(v.split(".")[0].split("/")[-1]),
+                glob(os.path.join(path, "*.ngmesh")),
+            )
+        )
     )
 
 
@@ -46,11 +69,19 @@ def make_segmentation_display_settings(path: str, prediction_colors: Dict[str, s
 ground_truth_scaling = 0.5
 base_res = 4.0
 yx_res = {"y": base_res, "x": base_res}
-base_display = DisplaySettings(ContrastLimits(0, 1.0), "white", True)
+base_display = DisplaySettings(
+    contrastLimits=ContrastLimits(start=0, end=1.0), color="white", invertLUT=False
+)
 
 axes = ("z", "y", "x")
 units = ("nm",) * len(axes)
 translate = (0,) * len(axes)
+
+
+@dataclass
+class EMDisplaySettings:
+    uint8: Optional[DisplaySettings] = None
+    uint16: Optional[DisplaySettings] = None
 
 
 @dataclass
@@ -62,11 +93,10 @@ class PathWithID:
 def scale(
     factors: Union[float, Sequence[float]], transform: SpatialTransform
 ) -> SpatialTransform:
-    return SpatialTransform(
-        transform.axes,
-        transform.units,
-        transform.translate,
-        tuple(np.multiply(factors, transform.scale)),
+    return SpatialTransform(axes=transform.axes,
+        units=transform.units,
+        translate=transform.translate,
+        scale=tuple(np.multiply(factors, transform.scale)),
     )
 
 
@@ -100,165 +130,6 @@ def get_classname_and_content_type(
     else:
         content_type = "analysis"
     return class_name, content_type
-
-
-base_transforms = {
-    "jrc_hela-4": SpatialTransform(
-        axes, units, translate, (base_res * 1.07, base_res, base_res)
-    ),
-    "jrc_mus-pancreas-1": SpatialTransform(
-        axes, units, translate, (base_res * 0.85, base_res, base_res)
-    ),
-    "jrc_hela-2": SpatialTransform(
-        axes, units, translate, (base_res * 1.31, base_res, base_res)
-    ),
-    "jrc_hela-3": SpatialTransform(
-        axes, units, translate, (base_res * 0.81, base_res, base_res)
-    ),
-    "jrc_jurkat-1": SpatialTransform(
-        axes, units, translate, (base_res * 0.86, base_res, base_res)
-    ),
-    "jrc_macrophage-2": SpatialTransform(
-        axes, units, translate, (base_res * 0.84, base_res, base_res)
-    ),
-    "jrc_sum159-1": SpatialTransform(
-        axes, units, translate, (base_res * 1.14, base_res, base_res)
-    ),
-    "jrc_ctl-id8-1": SpatialTransform(
-        axes, units, translate, (base_res * 0.87, base_res, base_res)
-    ),
-    "jrc_fly-fsb-1": SpatialTransform(
-        axes, units, translate, (base_res * 1.0, base_res, base_res)
-    ),
-    "jrc_fly-acc-calyx-1": SpatialTransform(
-        axes, units, translate, (base_res * 0.93, base_res, base_res)
-    ),
-    "jrc_hela-1": SpatialTransform(axes, units, translate, (base_res * 2,) * 3),
-    "jrc_choroid-plexus-2": SpatialTransform(
-        axes, units, translate, (base_res * 2,) * 3
-    ),
-    "jrc_cos7-11": SpatialTransform(axes, units, translate, (base_res * 2,) * 3),
-}
-
-
-@dataclass
-class EMDisplaySettings:
-    uint8: Optional[DisplaySettings] = None
-    uint16: Optional[DisplaySettings] = None
-
-
-em_display_settings = {}
-em_display_settings["jrc_hela-4"] = EMDisplaySettings(
-    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.57, end=0.805)),
-    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.275, end=0.355), invertLUT=True),
-)
-em_display_settings["jrc_mus-pancreas-1"] = EMDisplaySettings(
-    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.7176, end=0.8117)),
-    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.108, end=0.199), invertLUT=True),
-)
-em_display_settings["jrc_hela-2"] = EMDisplaySettings(
-    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.415, end=0.716)),
-    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.373, end=0.52), invertLUT=True),
-)
-em_display_settings["jrc_hela-3"] = EMDisplaySettings(
-    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.216, end=0.944)),
-    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.313, end=0.409), invertLUT=True),
-)
-em_display_settings["jrc_jurkat-1"] = EMDisplaySettings(
-    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.826, end=0.924)),
-    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.297, end=0.402), invertLUT=True),
-)
-em_display_settings["jrc_macrophage-2"] = EMDisplaySettings(
-    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.843, end=0.917)),
-    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.297, end=0.436), invertLUT=True),
-)
-em_display_settings["jrc_sum159-1"] = EMDisplaySettings(
-    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.706, end=0.864)),
-    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.241, end=0.334), invertLUT=True),
-)
-em_display_settings["jrc_ctl-id8-1"] = EMDisplaySettings(
-    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.166, end=0.265), invertLUT=True)
-)
-em_display_settings["jrc_fly-fsb-1"] = EMDisplaySettings(
-    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.03433, end=0.0509), invertLUT=True)
-)
-em_display_settings["jrc_fly-acc-calyx"] = EMDisplaySettings(
-    uint16=DisplaySettings(contrastLimits=ContrastLimits(start=0.02499, end=0.04994), invertLUT=True)
-)
-
-em_display_settings['jrc_hela-1'] = EMDisplaySettings(
-    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.39, end=0.56), invertLUT=True),
-)
-
-class_info = {
-    "cent": ("Centrosome", "white"),
-    "cent-dapp": ("Centrosome Distal Appendage", "white"),
-    "cent-sdapp": ("Centrosome Subdistal Appendage", "white"),
-    "chrom": ("Chromatin", "white"),
-    "er": ("Endoplasmic Reticulum", "blue"),
-    "er_palm": ("Light Microscopy (PALM) of ER", "white"),
-    "er_sim": ("Light Microscopy (SIM) of the ER", "white"),
-    "er-mem": ("Endoplasmic Reticulum membrane", "blue"),
-    "eres": ("Endoplasmic Reticulum Exit Site", "white"),
-    "eres-mem": ("Endoplasmic Reticulum Exit Site membrane", "white"),
-    "endo": ("Endosomal Network", "magenta"),
-    "endo-mem": ("Endosome membrane", "magenta"),
-    "echrom": ("Euchromatin", "white"),
-    "ecs": ("Extracellular Space", "white"),
-    "golgi": ("Golgi", "cyan"),
-    "golgi-mem": ("Golgi membrane", "cyan"),
-    "hchrom": ("Heterochromatin", "white"),
-    "ld": ("Lipid Droplet", "white"),
-    "ld-mem": ("Lipid Droplet membrane", "white"),
-    "lyso": ("Lysosome", "white"),
-    "lyso-mem": ("Lysosome membrane", "white"),
-    "mt": ("Microtubule", "orange"),
-    "mt-in": ("Microtubule inner", "orange"),
-    "mt-out": ("Microtubule outer", "orange"),
-    "mito": ("Mitochondria", "green"),
-    "mito_palm": ("Light Microscopy (PALM) of Mitochondria", "white"),
-    "mito_sim": ("Light Microscopy (SIM) of Mitochondria", "white"),
-    "mito-mem": ("Mitochondria membrane", "green"),
-    "mito-ribo": ("Mitochondria Ribosome", "white"),
-    "ne": ("Nuclear Envelope", "white"),
-    "ne-mem": ("Nuclear Envelope membrane", "white"),
-    "np": ("Nuclear Pore", "white"),
-    "np-in": ("Nuclear Pore inner", "white"),
-    "np-out": ("Nuclear Pore outer", "white"),
-    "nucleolus": ("Nucleoulus", "white"),
-    "nechrom": ("Nucleoulus associated Euchromatin", "white"),
-    "nhchrom": ("Nucleoulus associated Heterochromatin", "white"),
-    "nucleus": ("Nucleus", "red"),
-    "pm": ("Plasma Membrane", "orange"),
-    "ribo": ("Ribosome", "yellow"),
-    "vesicle": ("Vesicle", "red"),
-    "vesicle-mem": ("Vesicle membrane", "red"),
-    "er_ribo_contacts": ("ER - Ribosome Contact Sites", "white"),
-    "er_golgi_contacts": ("ER - Golgi Contact Sites", "white"),
-    "er_mito_contacts": ("ER - Mito Contact Sites", "white"),
-    "endo_er_contacts": ("Endosome - ER Contact Sites", "white"),
-    "er_nucleus_contacts": ("ER - Nucleus Contact Sites", "white"),
-    "er_pm_contacts": ("ER - Plasma Membrane Contat Sites", "white"),
-    "er_vesicle_contacts": ("ER - Vesicle Contact Sites", "white"),
-    "golgi_vesicle_contacts": ("Golgi - Vesicle Contact Sites", "white"),
-    "endo_golgi_contacts": ("Endosome - Golgi Contact Sites", "white"),
-    "mito_pm_contacts": ("Mito - Plasma Membrane Contact Sites", "white"),
-    "er_mt_contacts": ("ER - Microtubule Contact Sites", "white"),
-    "endo_mt_contacts": ("Endosome - Microtubule Contact Sites", "white"),
-    "golgi_mt_contacts": ("Golgi - Microtubule Contact Sites", "white"),
-    "mito_mt_contacts": ("Mitochondria - Microtubule Contact Sites", "white"),
-    "mt_nucleus_contacts": ("Microtubule - Nucleus Contact Sites", "white"),
-    "mt_vesicle_contacts": ("Microtubule - Vesicle Contact Sites", "white"),
-    "mt_pm_contacts": ("Microtubule - Plasma Membrane Contact Sites", "white"),
-    "mito_skeleton": ("Mitochrondria Skeletons", "white"),
-    "mito_skeleton-lsp": ("Mitochrondria Skeletons: Longest Shortest Path", "white"),
-    "er_medial-surface": ("ER Medial Surface", "white"),
-    "er_curvature": ("Reconstructed ER from Medial Surface with Curvature", "white"),
-    "ribo_classified": ("Ribosomes classified by contact surface", "white"),
-    "fibsem-uint8": ("FIB-SEM Data (compressed)", "white"),
-    "fibsem-uint16": ("FIB-SEM Data (uncompressed)", "white"),
-    "gt": ("Ground truth", "white"),
-}
 
 
 def get_views_from_google_docs(credfile, spreadsheet_name, spreadsheet_page):
@@ -302,8 +173,7 @@ def views_from_dataframe(df: pd.DataFrame):
 
 
 def makeVolumeSource(
-    datasetName: str,
-    volumeName: str,
+    name: str,
     path: str,
     displaySettings: DisplaySettings,
     transform: SpatialTransform,
@@ -315,18 +185,15 @@ def makeVolumeSource(
 
     try:
         arr: xarray.DataArray = read_xarray(path)
-    except zarr.errors.PathNotFoundError as e:
+    except:
         print(f"Could not access an array at {path}")
         return None
 
-    dimensions: Tuple[int, ...] = arr.shape
     containerType = infer_container_type(path)
     return VolumeSource(
         path=path,
-        datasetName=datasetName,
-        name=volumeName,
+        name=name,
         dataType=str(arr.dtype),
-        dimensions=dimensions,
         displaySettings=displaySettings,
         transform=transform,
         contentType=contentType,
@@ -348,199 +215,588 @@ class RawSources:
     lm: Optional[Tuple[str, ...]] = None
 
 
-hess_raw_dir = "/groups/hess/hesslab/HighResPaper_rawdata"
-cosem_raw_dir = "/groups/cosem/cosem/data"
-prediction_dir = "/groups/cosem/cosem/ackermand/forDavis/renumbered"
+base_transforms = {
+    "jrc_hela-4": SpatialTransform(
+        axes=axes,
+        units=units,
+        translate=translate,
+        scale=(base_res * 1.07, base_res, base_res),
+    ),
+    "jrc_mus-pancreas-1": SpatialTransform(
+        axes=axes,
+        units=units,
+        translate=translate,
+        scale=(base_res * 0.85, base_res, base_res),
+    ),
+    "jrc_hela-2": SpatialTransform(
+        axes=axes,
+        units=units,
+        translate=translate,
+        scale=(base_res * 1.31, base_res, base_res),
+    ),
+    "jrc_hela-3": SpatialTransform(
+        axes=axes,
+        units=units,
+        translate=translate,
+        scale=(base_res * 0.81, base_res, base_res),
+    ),
+    "jrc_jurkat-1": SpatialTransform(
+        axes=axes,
+        units=units,
+        translate=translate,
+        scale=(base_res * 0.86, base_res, base_res),
+    ),
+    "jrc_macrophage-2": SpatialTransform(
+        axes=axes,
+        units=units,
+        translate=translate,
+        scale=(base_res * 0.84, base_res, base_res),
+    ),
+    "jrc_sum159-1": SpatialTransform(
+        axes=axes,
+        units=units,
+        translate=translate,
+        scale=(base_res * 1.14, base_res, base_res),
+    ),
+    "jrc_ctl-id8-1": SpatialTransform(
+        axes=axes,
+        units=units,
+        translate=translate,
+        scale=(base_res * 0.87, base_res, base_res),
+    ),
+    "jrc_fly-fsb-1": SpatialTransform(
+        axes=axes,
+        units=units,
+        translate=translate,
+        scale=(base_res * 1.0, base_res, base_res),
+    ),
+    "jrc_fly-acc-calyx-1": SpatialTransform(
+        axes=axes,
+        units=units,
+        translate=translate,
+        scale=(base_res * 0.93, base_res, base_res),
+    ),
+    "jrc_hela-1": SpatialTransform(
+        axes=axes, units=units, translate=translate, scale=(base_res * 2,) * 3
+    ),
+    "jrc_choroid-plexus-2": SpatialTransform(
+        axes=axes, units=units, translate=translate, scale=(base_res * 2,) * 3
+    ),
+    "jrc_cos7-11": SpatialTransform(
+        axes=axes, units=units, translate=translate, scale=(base_res * 2,) * 3
+    ),
+}
 
-raw_sources = (
-    RawSources(
+
+em_display_settings = {}
+em_display_settings["jrc_hela-4"] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.57, end=0.805)),
+    uint16=DisplaySettings(
+        contrastLimits=ContrastLimits(start=0.275, end=0.355), invertLUT=True
+    ),
+)
+em_display_settings["jrc_mus-pancreas-1"] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.7176, end=0.8117)),
+    uint16=DisplaySettings(
+        contrastLimits=ContrastLimits(start=0.108, end=0.199), invertLUT=True
+    ),
+)
+em_display_settings["jrc_hela-2"] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.415, end=0.716)),
+    uint16=DisplaySettings(
+        contrastLimits=ContrastLimits(start=0.373, end=0.52), invertLUT=True
+    ),
+)
+em_display_settings["jrc_hela-3"] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.216, end=0.944)),
+    uint16=DisplaySettings(
+        contrastLimits=ContrastLimits(start=0.313, end=0.409), invertLUT=True
+    ),
+)
+em_display_settings["jrc_jurkat-1"] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.826, end=0.924)),
+    uint16=DisplaySettings(
+        contrastLimits=ContrastLimits(start=0.297, end=0.402), invertLUT=True
+    ),
+)
+em_display_settings["jrc_macrophage-2"] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.843, end=0.917)),
+    uint16=DisplaySettings(
+        contrastLimits=ContrastLimits(start=0.297, end=0.436), invertLUT=True
+    ),
+)
+em_display_settings["jrc_sum159-1"] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0.706, end=0.864)),
+    uint16=DisplaySettings(
+        contrastLimits=ContrastLimits(start=0.241, end=0.334), invertLUT=True
+    ),
+)
+em_display_settings["jrc_ctl-id8-1"] = EMDisplaySettings(
+    uint16=DisplaySettings(
+        contrastLimits=ContrastLimits(start=0.166, end=0.265), invertLUT=True
+    )
+)
+em_display_settings["jrc_fly-fsb-1"] = EMDisplaySettings(
+    uint16=DisplaySettings(
+        contrastLimits=ContrastLimits(start=0.03433, end=0.0509), invertLUT=True
+    )
+)
+em_display_settings["jrc_fly-acc-calyx-1"] = EMDisplaySettings(
+    uint16=DisplaySettings(
+        contrastLimits=ContrastLimits(start=0.02499, end=0.04994), invertLUT=True
+    )
+)
+
+em_display_settings["jrc_hela-1"] = EMDisplaySettings(
+    uint8=DisplaySettings(
+        contrastLimits=ContrastLimits(start=0.39, end=0.56), invertLUT=True
+    ),
+)
+
+em_display_settings["jrc_choroid-plexus-2"] = EMDisplaySettings(
+    uint8=DisplaySettings(contrastLimits=ContrastLimits(start=0, end=1))
+)
+em_display_settings["jrc_cos7-11"] = EMDisplaySettings(
+    uint16=DisplaySettings(
+        contrastLimits=ContrastLimits(start=0, end=456 / (2 ** 16 - 1))
+    )
+)
+
+PathLike = Union[FilePath, DirectoryPath]
+
+
+class SourcePaths(BaseModel):
+    uint8: Optional[PathLike]
+    uint16: Optional[PathLike]
+    pred: Optional[PathLike]
+    groundTruth: Optional[PathLike]
+    mesh: Optional[PathLike]
+    lm: Optional[PathLike]
+
+
+source_paths = {}
+source_paths["jrc_hela-4"] = SourcePaths(
+    uint8=f"{hess_raw_dir}/10. HeLa_mitotic_17-7_Cell4_4x4x4nm/HeLa_mitotic_17-7_17_Cell4 4x4x4nm_raw.mrc",
+    uint16=f"{hess_raw_dir}/10. HeLa_mitotic_17-7_Cell4_4x4x4nm/HeLa_mitotic_17-7_17_Cell4 4x4x4nm 16bit.mrc",
+)
+source_paths["jrc_mus-pancreas-1"] = SourcePaths(
+    uint8=f"{hess_raw_dir}/1. Pancreas Islet_G64-2-1-HighGlucose_4x4x4nm/G64-2-1_HighGlucose 4x4x4nm.mrc",
+    uint16=f"{hess_raw_dir}/1. Pancreas Islet_G64-2-1-HighGlucose_4x4x4nm/G64-2-1_HighGlucose 4x4x4nm 16bit.mrc",
+)
+source_paths["jrc_hela-2"] = SourcePaths(
+    uint8=f"{cosem_raw_dir}/HeLa_Cell2_4x4x4nm/Aubrey_17-7_17_Cell2 4x4x4nm.mrc",
+    uint16=f"{hess_raw_dir}/2. HeLa2_Aubrey_17-7_17_Cell2_4x4x4nm/Aubrey_17-7_17_Cell2 4x4x4nm 16bit.mrc",
+    pred=os.path.join(prediction_dir, "jrc_hela-2/jrc_hela-2.n5"),
+    groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_hela-2/jrc_hela-2.n5/groundtruth_0003/",
+    mesh=os.path.join(prediction_dir, "jrc_hela-2/mesh"),
+)
+source_paths["jrc_hela-3"] = SourcePaths(
+    uint8=f"{hess_raw_dir}/3. HeLa3_Aubrey_17-7_17_Cell3_4x4x4nm/HeLa_Cell3_17-7_17_4x4x4nm.mrc",
+    uint16=f"{hess_raw_dir}/3. HeLa3_Aubrey_17-7_17_Cell3_4x4x4nm/HeLa_Cell3_17-7_17_4x4x4nm 16bit.mrc",
+    pred=os.path.join(prediction_dir, "jrc_hela-3/jrc_hela-3.n5"),
+    groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_hela-3/jrc_hela-3.n5/groundtruth_0003/",
+    mesh=os.path.join(prediction_dir, "jrc_hela-3/mesh"),
+)
+source_paths["jrc_jurkat-1"] = SourcePaths(
+    uint8=f"{hess_raw_dir}/7. Jurkat_Cryo_2017_FS96_Cell1_4x4x4nm/Jurkat_Cryo_2017_FS96_Area1 4x4x4nm.mrc",
+    uint16=f"{hess_raw_dir}/7. Jurkat_Cryo_2017_FS96_Cell1_4x4x4nm/Jurkat_Cryo_2017_FS96_Area1 4x4x4nm 16bit.mrc",
+    pred=os.path.join(prediction_dir, "jrc_jurkat-1/jrc_jurkat-1.n5"),
+    groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_jurkat-1/jrc_jurkat-1.n5/groundtruth_0003/",
+    mesh=os.path.join(prediction_dir, "jrc_jurkat-1/mesh"),
+)
+
+source_paths["jrc_macrophage-2"] = SourcePaths(
+    uint8=f"{cosem_raw_dir}/Macrophage_FS80_Cell2_4x4x4nm/Cryo_FS80_Cell2 4x4x4nm.mrc",
+    uint16=f"{hess_raw_dir}/6. Macrophage_FS80_Cell2_4x4x4nm/Macrophage_FS80_Cell2 4x4x4nm 16bit.mrc",
+    pred=os.path.join(prediction_dir, "jrc_macrophage-2/jrc_macrophage-2.n5"),
+    groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_macrophage-2/jrc_macrophage-2.n5/groundtruth_0003/",
+    mesh=os.path.join(prediction_dir, "jrc_macrophage-2/mesh"),
+)
+
+source_paths["jrc_sum159-1"] = SourcePaths(
+    uint8=f"{hess_raw_dir}/8. SUM159_WT45_Cell2_4x4x4nm/SUM159_WT45_Cell2_Cryo_20171009_4x4x4nm.mrc",
+    uint16=f"{hess_raw_dir}/8. SUM159_WT45_Cell2_4x4x4nm/SUM159_WT45_Cell2_Cryo_20171009_4x4x4nm 16bit.mrc",
+    groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_sum159-1/jrc_sum159-1.n5/groundtruth_0003/",
+)
+
+source_paths["jrc_ctl-id8-1"] = SourcePaths(
+    uint16=f"{hess_raw_dir}/9. TCell_on_cancer_4x4x4nm/TCell_on_cancer_Atlas1_4x4x4nm 16bit.mrc"
+)
+
+source_paths["jrc_fly-fsb-1"] = SourcePaths(
+    uint16=f"{hess_raw_dir}/4. Fly Fan Shaped Body[Column1-9]_Z0519-11_4x4x4nm/FB-Z0519-11 4x4x4nm 16bit.mrc"
+)
+source_paths["jrc_fly-acc-calyx-1"] = SourcePaths(
+    uint16="/groups/cosem/cosem/bennettd/imports/jrc_fly-acc-calyx-1/jrc_fly-acc-calyx-1.n5/aligned_uint16"
+)
+source_paths["jrc_hela-1"] = SourcePaths(
+    uint8=f"{cosem_raw_dir}/HeLa_Cell1_8x8x8nm/Aubrey_17-7_17_Cell1_D05-10_8x8x8nm.mrc",
+    pred=os.path.join(prediction_dir, "jrc_hela-1/jrc_hela-1.n5"),
+)
+
+source_paths["jrc_choroid-plexus-2"] = SourcePaths(
+    uint8="/nrs/cosem/bennettd/Choroid-Plexus_8x8x8nm/Choroid-Plexus_8x8x8nm.n5/volumes/raw/s0/",
+    pred=os.path.join(prediction_dir, "jrc_choroid-plexus-2/jrc_choroid-plexus-2.n5"),
+)
+
+source_paths["jrc_cos7-11"] = SourcePaths(
+    uint16=f"/nrs/cosem/bennettd/COS7_Cell11_8x8x8nm/SIFTalignTrans-invert.n5/volumes/raw/",
+    pred="/nrs/cosem/bennettd/data/jrc_cos7-11/jrc_cos7-11.n5/volumes/labels",
+    lm="/nrs/cosem/bennettd/data/jrc_cos7-11/jrc_cos7-11.n5/volumes/lm",
+)
+
+raw_sources = {}
+if False:
+    raw_sources["jrc_hela-4"] = RawSources(
         "jrc_hela-4",
         (
             f"{hess_raw_dir}/10. HeLa_mitotic_17-7_Cell4_4x4x4nm/HeLa_mitotic_17-7_17_Cell4 4x4x4nm_raw.mrc",
-            DisplaySettings(ContrastLimits(0.57, 0.805)),
+            DisplaySettings(ContrastLimits(start=0.57, end=0.805)),
         ),
         (
             f"{hess_raw_dir}/10. HeLa_mitotic_17-7_Cell4_4x4x4nm/HeLa_mitotic_17-7_17_Cell4 4x4x4nm 16bit.mrc",
-            DisplaySettings(ContrastLimits(0.275, 0.355), invertColormap=True),
+            DisplaySettings(
+                ContrastLimits(start=0.275, end=0.355), invertColormap=True
+            ),
         ),
-    ),
-    RawSources(
-        "jrc_mus-pancreas-1",
-        (
-            f"{hess_raw_dir}/1. Pancreas Islet_G64-2-1-HighGlucose_4x4x4nm/G64-2-1_HighGlucose 4x4x4nm.mrc",
-            DisplaySettings(ContrastLimits(0.7176, 0.8117)),
-        ),
-        (
-            f"{hess_raw_dir}/1. Pancreas Islet_G64-2-1-HighGlucose_4x4x4nm/G64-2-1_HighGlucose 4x4x4nm 16bit.mrc",
-            DisplaySettings(ContrastLimits(0.108, 0.199), invertColormap=True),
-        ),
-    ),
-    RawSources(
-        "jrc_hela-2",
-        (
-            f"{cosem_raw_dir}/HeLa_Cell2_4x4x4nm/Aubrey_17-7_17_Cell2 4x4x4nm.mrc",
-            DisplaySettings(ContrastLimits(0.415, 0.716)),
-        ),
-        (
-            f"{hess_raw_dir}/2. HeLa2_Aubrey_17-7_17_Cell2_4x4x4nm/Aubrey_17-7_17_Cell2 4x4x4nm 16bit.mrc",
-            DisplaySettings(ContrastLimits(0.373, 0.52), invertColormap=True),
-        ),
-        pred=dir_glob(os.path.join(prediction_dir, "jrc_hela-2/jrc_hela-2.n5")),
-        groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_hela-2/jrc_hela-2.n5/groundtruth_0003/",
-        meshes=dir_glob(os.path.join(prediction_dir, "jrc_hela-2/neuroglancer/mesh")),
-    ),
-    RawSources(
-        "jrc_hela-3",
-        (
-            f"{hess_raw_dir}/3. HeLa3_Aubrey_17-7_17_Cell3_4x4x4nm/HeLa_Cell3_17-7_17_4x4x4nm.mrc",
-            DisplaySettings(ContrastLimits(0.216, 0.944)),
-        ),
-        (
-            f"{hess_raw_dir}/3. HeLa3_Aubrey_17-7_17_Cell3_4x4x4nm/HeLa_Cell3_17-7_17_4x4x4nm 16bit.mrc",
-            DisplaySettings(ContrastLimits(0.313, 0.409), invertColormap=True),
-        ),
-        pred=dir_glob(
-            os.path.join(prediction_dir, "jrc_hela-3/jrc_hela-3.n5"),
-        ),
-        groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_hela-3/jrc_hela-3.n5/groundtruth_0003/",
-    ),
-    RawSources(
-        "jrc_jurkat-1",
-        (
-            f"{hess_raw_dir}/7. Jurkat_Cryo_2017_FS96_Cell1_4x4x4nm/Jurkat_Cryo_2017_FS96_Area1 4x4x4nm.mrc",
-            DisplaySettings(ContrastLimits(0.826, 0.924)),
-        ),
-        (
-            f"{hess_raw_dir}/7. Jurkat_Cryo_2017_FS96_Cell1_4x4x4nm/Jurkat_Cryo_2017_FS96_Area1 4x4x4nm 16bit.mrc",
-            DisplaySettings(ContrastLimits(0.297, 0.402), invertColormap=True),
-        ),
-        pred=dir_glob(
-            "/groups/cosem/cosem/ackermand/forDavis/jrc_jurkat-1/jrc_jurkat-1.n5"
-        ),
-        groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_jurkat-1/jrc_jurkat-1.n5/groundtruth_0003/",
-    ),
-    RawSources(
-        "jrc_macrophage-2",
-        (
-            f"{cosem_raw_dir}/Macrophage_FS80_Cell2_4x4x4nm/Cryo_FS80_Cell2 4x4x4nm.mrc",
-            DisplaySettings(ContrastLimits(0.843, 0.917)),
-        ),
-        (
-            f"{hess_raw_dir}/6. Macrophage_FS80_Cell2_4x4x4nm/Macrophage_FS80_Cell2 4x4x4nm 16bit.mrc",
-            DisplaySettings(ContrastLimits(0.297, 0.436), invertColormap=True),
-        ),
-        pred=dir_glob(
-            "/groups/cosem/cosem/ackermand/forDavis/jrc_macrophage-2/jrc_macrophage-2.n5"
-        ),
-        groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_macrophage-2/jrc_macrophage-2.n5/groundtruth_0003/",
-    ),
-    RawSources(
-        "jrc_sum159-1",
-        (
-            f"{hess_raw_dir}/8. SUM159_WT45_Cell2_4x4x4nm/SUM159_WT45_Cell2_Cryo_20171009_4x4x4nm.mrc",
-            DisplaySettings(ContrastLimits(0.706, 0.864)),
-        ),
-        (
-            f"{hess_raw_dir}/8. SUM159_WT45_Cell2_4x4x4nm/SUM159_WT45_Cell2_Cryo_20171009_4x4x4nm 16bit.mrc",
-            DisplaySettings(ContrastLimits(0.241, 0.334), invertColormap=True),
-        ),
-        groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_sum159-1/jrc_sum159-1.n5/groundtruth_0003/",
-    ),
-    RawSources(
-        "jrc_ctl-id8-1",
-        None,
-        (
-            f"{hess_raw_dir}/9. TCell_on_cancer_4x4x4nm/TCell_on_cancer_Atlas1_4x4x4nm 16bit.mrc",
-            DisplaySettings(ContrastLimits(0.166, 0.265), invertColormap=True),
-        ),
-    ),
-    RawSources(
-        "jrc_fly-fsb-1",
-        None,
-        (
-            f"{hess_raw_dir}/4. Fly Fan Shaped Body[Column1-9]_Z0519-11_4x4x4nm/FB-Z0519-11 4x4x4nm 16bit.mrc",
-            DisplaySettings(ContrastLimits(0.03433, 0.0509), invertColormap=True),
-        ),
-    ),
-    RawSources(
-        "jrc_fly-acc-calyx-1",
-        None,
-        (
-            "/groups/cosem/cosem/bennettd/imports/jrc_fly-acc-calyx-1/jrc_fly-acc-calyx-1.n5/aligned_uint16",
-            DisplaySettings(ContrastLimits(0.02499, 0.04994), invertColormap=True),
-        ),
-    ),
-    RawSources(
-        "jrc_hela-1",
-        (
-            f"{cosem_raw_dir}/HeLa_Cell1_8x8x8nm/Aubrey_17-7_17_Cell1_D05-10_8x8x8nm.mrc",
-            DisplaySettings(ContrastLimits(0.39, 0.56), invertColormap=True),
-        ),
-        pred=dir_glob(
-            "/groups/cosem/cosem/ackermand/forDavis/jrc_hela-1/jrc_hela-1.n5"
-        ),
-    ),
-    RawSources(
-        "jrc_choroid-plexus-2",
-        (
-            "/nrs/cosem/bennettd/Choroid-Plexus_8x8x8nm/Choroid-Plexus_8x8x8nm.n5/volumes/raw/s0/",
-            DisplaySettings(ContrastLimits(0, 1)),
-        ),
-        pred=dir_glob(
-            "/groups/cosem/cosem/ackermand/forDavis/jrc_choroid-plexus-2/jrc_choroid-plexus-2.n5"
-        ),
-    ),
-    RawSources(
-        "jrc_cos7-11",
-        uint8=None,
-        uint16=(
-            f"/nrs/cosem/bennettd/COS7_Cell11_8x8x8nm/SIFTalignTrans-invert.n5/volumes/raw/",
-            DisplaySettings(ContrastLimits(0, 456 / (2 ** 16 - 1))),
-        ),
-        pred=(
-            makeVolumeSource(
-                datasetName="jrc_cos7-11",
-                volumeName="mito_pred",
-                path="/nrs/cosem/cosem/training/v0003.2/setup26.1/COS7_Cell11_8x8x8nm/SIFTalignTrans-invert_it650000.n5/mito/",
-                displaySettings=DisplaySettings(
-                    ContrastLimits(0, 1), color=class_info["mito"][1]
+    )
+    raw_sources["jrc_mus-pancreas-1"] = None
+if False:
+    raw_sources = (
+        RawSources(
+            "jrc_hela-4",
+            (
+                f"{hess_raw_dir}/10. HeLa_mitotic_17-7_Cell4_4x4x4nm/HeLa_mitotic_17-7_17_Cell4 4x4x4nm_raw.mrc",
+                DisplaySettings(ContrastLimits(start=0.57, end=0.805)),
+            ),
+            (
+                f"{hess_raw_dir}/10. HeLa_mitotic_17-7_Cell4_4x4x4nm/HeLa_mitotic_17-7_17_Cell4 4x4x4nm 16bit.mrc",
+                DisplaySettings(
+                    ContrastLimits(start=0.275, end=0.355), invertColormap=True
                 ),
-                transform=base_transforms["jrc_cos7-11"],
-                contentType="prediction",
-                description=class_info["mito"][0],
             ),
-            makeVolumeSource(
-                datasetName="jrc_cos7-11",
-                volumeName="er_pred",
-                path="/nrs/cosem/bennettd/scratch/jrc_cos7-11/SIFTalignTrans-invert_it825000.n5/er/",
-                displaySettings=DisplaySettings(
-                    ContrastLimits(0, 1), color=class_info["er"][1]
+        ),
+        RawSources(
+            "jrc_mus-pancreas-1",
+            (
+                f"{hess_raw_dir}/1. Pancreas Islet_G64-2-1-HighGlucose_4x4x4nm/G64-2-1_HighGlucose 4x4x4nm.mrc",
+                DisplaySettings(ContrastLimits(start=0.7176, end=0.8117)),
+            ),
+            (
+                f"{hess_raw_dir}/1. Pancreas Islet_G64-2-1-HighGlucose_4x4x4nm/G64-2-1_HighGlucose 4x4x4nm 16bit.mrc",
+                DisplaySettings(
+                    ContrastLimits(start=0.108, end=0.199), invertColormap=True
                 ),
-                transform=base_transforms["jrc_cos7-11"],
-                contentType="prediction",
-                description=class_info["er"][0],
             ),
         ),
-        lm=(
-            PathWithID(
-                urlpath="/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/PALM_488_transformed",
-                id="er_palm",
+        RawSources(
+            "jrc_hela-2",
+            (
+                f"{cosem_raw_dir}/HeLa_Cell2_4x4x4nm/Aubrey_17-7_17_Cell2 4x4x4nm.mrc",
+                DisplaySettings(ContrastLimits(start=0.415, end=0.716)),
             ),
-            PathWithID(
-                urlpath="/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/PALM_532_transformed",
-                id="mito_palm",
+            (
+                f"{hess_raw_dir}/2. HeLa2_Aubrey_17-7_17_Cell2_4x4x4nm/Aubrey_17-7_17_Cell2 4x4x4nm 16bit.mrc",
+                DisplaySettings(
+                    ContrastLimits(start=0.373, end=0.52), invertColormap=True
+                ),
             ),
-            PathWithID(
-                urlpath="/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/SIM_488_transformed",
-                id="er_sim",
-            ),
-            PathWithID(
-                urlpath="/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/SIM_532_transformed",
-                id="mito_sim",
+            pred=dir_glob(os.path.join(prediction_dir, "jrc_hela-2/jrc_hela-2.n5")),
+            groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_hela-2/jrc_hela-2.n5/groundtruth_0003/",
+            meshes=dir_glob(
+                os.path.join(prediction_dir, "jrc_hela-2/neuroglancer/mesh")
             ),
         ),
-    ),
-)
+        RawSources(
+            "jrc_hela-3",
+            (
+                f"{hess_raw_dir}/3. HeLa3_Aubrey_17-7_17_Cell3_4x4x4nm/HeLa_Cell3_17-7_17_4x4x4nm.mrc",
+                DisplaySettings(ContrastLimits(start=0.216, end=0.944)),
+            ),
+            (
+                f"{hess_raw_dir}/3. HeLa3_Aubrey_17-7_17_Cell3_4x4x4nm/HeLa_Cell3_17-7_17_4x4x4nm 16bit.mrc",
+                DisplaySettings(
+                    contrastLimits=ContrastLimits(start=0.313, end=0.409),
+                    invertColormap=True,
+                ),
+            ),
+            pred=dir_glob(
+                os.path.join(prediction_dir, "jrc_hela-3/jrc_hela-3.n5"),
+            ),
+            groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_hela-3/jrc_hela-3.n5/groundtruth_0003/",
+        ),
+        RawSources(
+            "jrc_jurkat-1",
+            (
+                f"{hess_raw_dir}/7. Jurkat_Cryo_2017_FS96_Cell1_4x4x4nm/Jurkat_Cryo_2017_FS96_Area1 4x4x4nm.mrc",
+                DisplaySettings(ContrastLimits(0.826, 0.924)),
+            ),
+            (
+                f"{hess_raw_dir}/7. Jurkat_Cryo_2017_FS96_Cell1_4x4x4nm/Jurkat_Cryo_2017_FS96_Area1 4x4x4nm 16bit.mrc",
+                DisplaySettings(ContrastLimits(0.297, 0.402), invertColormap=True),
+            ),
+            pred=dir_glob(
+                "/groups/cosem/cosem/ackermand/forDavis/jrc_jurkat-1/jrc_jurkat-1.n5"
+            ),
+            groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_jurkat-1/jrc_jurkat-1.n5/groundtruth_0003/",
+        ),
+        RawSources(
+            "jrc_macrophage-2",
+            (
+                f"{cosem_raw_dir}/Macrophage_FS80_Cell2_4x4x4nm/Cryo_FS80_Cell2 4x4x4nm.mrc",
+                DisplaySettings(ContrastLimits(0.843, 0.917)),
+            ),
+            (
+                f"{hess_raw_dir}/6. Macrophage_FS80_Cell2_4x4x4nm/Macrophage_FS80_Cell2 4x4x4nm 16bit.mrc",
+                DisplaySettings(ContrastLimits(0.297, 0.436), invertColormap=True),
+            ),
+            pred=dir_glob(
+                "/groups/cosem/cosem/ackermand/forDavis/jrc_macrophage-2/jrc_macrophage-2.n5"
+            ),
+            groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_macrophage-2/jrc_macrophage-2.n5/groundtruth_0003/",
+        ),
+        RawSources(
+            "jrc_sum159-1",
+            (
+                f"{hess_raw_dir}/8. SUM159_WT45_Cell2_4x4x4nm/SUM159_WT45_Cell2_Cryo_20171009_4x4x4nm.mrc",
+                DisplaySettings(ContrastLimits(0.706, 0.864)),
+            ),
+            (
+                f"{hess_raw_dir}/8. SUM159_WT45_Cell2_4x4x4nm/SUM159_WT45_Cell2_Cryo_20171009_4x4x4nm 16bit.mrc",
+                DisplaySettings(ContrastLimits(0.241, 0.334), invertColormap=True),
+            ),
+            groundTruth="/nrs/cosem/bennettd/groundtruth/jrc_sum159-1/jrc_sum159-1.n5/groundtruth_0003/",
+        ),
+        RawSources(
+            "jrc_ctl-id8-1",
+            None,
+            (
+                f"{hess_raw_dir}/9. TCell_on_cancer_4x4x4nm/TCell_on_cancer_Atlas1_4x4x4nm 16bit.mrc",
+                DisplaySettings(ContrastLimits(0.166, 0.265), invertColormap=True),
+            ),
+        ),
+        RawSources(
+            "jrc_fly-fsb-1",
+            None,
+            (
+                f"{hess_raw_dir}/4. Fly Fan Shaped Body[Column1-9]_Z0519-11_4x4x4nm/FB-Z0519-11 4x4x4nm 16bit.mrc",
+                DisplaySettings(ContrastLimits(0.03433, 0.0509), invertColormap=True),
+            ),
+        ),
+        RawSources(
+            "jrc_fly-acc-calyx-1",
+            None,
+            (
+                "/groups/cosem/cosem/bennettd/imports/jrc_fly-acc-calyx-1/jrc_fly-acc-calyx-1.n5/aligned_uint16",
+                DisplaySettings(ContrastLimits(0.02499, 0.04994), invertColormap=True),
+            ),
+        ),
+        RawSources(
+            "jrc_hela-1",
+            (
+                f"{cosem_raw_dir}/HeLa_Cell1_8x8x8nm/Aubrey_17-7_17_Cell1_D05-10_8x8x8nm.mrc",
+                DisplaySettings(ContrastLimits(0.39, 0.56), invertColormap=True),
+            ),
+            pred=dir_glob(
+                "/groups/cosem/cosem/ackermand/forDavis/jrc_hela-1/jrc_hela-1.n5"
+            ),
+        ),
+        RawSources(
+            "jrc_choroid-plexus-2",
+            (
+                "/nrs/cosem/bennettd/Choroid-Plexus_8x8x8nm/Choroid-Plexus_8x8x8nm.n5/volumes/raw/s0/",
+                DisplaySettings(ContrastLimits(0, 1)),
+            ),
+            pred=dir_glob(
+                "/groups/cosem/cosem/ackermand/forDavis/jrc_choroid-plexus-2/jrc_choroid-plexus-2.n5"
+            ),
+        ),
+        RawSources(
+            "jrc_cos7-11",
+            uint8=None,
+            uint16=(
+                f"/nrs/cosem/bennettd/COS7_Cell11_8x8x8nm/SIFTalignTrans-invert.n5/volumes/raw/",
+                DisplaySettings(ContrastLimits(0, 456 / (2 ** 16 - 1))),
+            ),
+            pred=(
+                makeVolumeSource(
+                    datasetName="jrc_cos7-11",
+                    volumeName="mito_pred",
+                    path="/nrs/cosem/cosem/training/v0003.2/setup26.1/COS7_Cell11_8x8x8nm/SIFTalignTrans-invert_it650000.n5/mito/",
+                    displaySettings=DisplaySettings(
+                        ContrastLimits(0, 1), color=class_info["mito"][1]
+                    ),
+                    transform=base_transforms["jrc_cos7-11"],
+                    contentType="prediction",
+                    description=class_info["mito"][0],
+                ),
+                makeVolumeSource(
+                    datasetName="jrc_cos7-11",
+                    volumeName="er_pred",
+                    path="/nrs/cosem/bennettd/scratch/jrc_cos7-11/SIFTalignTrans-invert_it825000.n5/er/",
+                    displaySettings=DisplaySettings(
+                        ContrastLimits(0, 1), color=class_info["er"][1]
+                    ),
+                    transform=base_transforms["jrc_cos7-11"],
+                    contentType="prediction",
+                    description=class_info["er"][0],
+                ),
+            ),
+            lm=(
+                PathWithID(
+                    urlpath="/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/PALM_488_transformed",
+                    id="er_palm",
+                ),
+                PathWithID(
+                    urlpath="/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/PALM_532_transformed",
+                    id="mito_palm",
+                ),
+                PathWithID(
+                    urlpath="/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/SIM_488_transformed",
+                    id="er_sim",
+                ),
+                PathWithID(
+                    urlpath="/nrs/saalfeld/john/projects/cosem/COS7_Cell11/SIFTalignTrans-invert_it650k/results/light.n5/SIM_532_transformed",
+                    id="mito_sim",
+                ),
+            ),
+        ),
+    )
+
+
+def create_sources(
+    sp: SourcePaths,
+    base_transform: SpatialTransform,
+    em_display: EMDisplaySettings,
+    class_info: Dict[str, ClassMetadata],
+) -> List[VolumeSource]:
+    results: List[VolumeSource] = []
+    if sp.uint8 is not None:
+        path = str(sp.uint8)
+        assert read_xarray(path).dtype == "uint8"
+        name = "fibsem-uint8"
+        displaysettings = em_display.uint8
+        vsource = VolumeSource(
+            name=name,
+            path=path,
+            dataType="uint8",
+            contentType="em",
+            format=infer_container_type(path),
+            transform=base_transform,
+            description=class_info[name].description,
+            displaySettings=displaysettings,
+        )
+        results.append(vsource)
+    if sp.uint16 is not None:
+        path = str(sp.uint16)
+        assert read_xarray(path).dtype == "uint16"
+        name = "fibsem-uint16"
+        displaysettings = em_display.uint16
+        vsource = VolumeSource(
+            name=name,
+            path=path,
+            dataType="uint16",
+            contentType="em",
+            format=infer_container_type(path),
+            transform=base_transform,
+            description=class_info[name].description,
+            displaySettings=displaysettings,
+        )
+        results.append(vsource)
+    if sp.pred is not None:
+        pred_paths = dir_glob(str(sp.pred))
+        mesh_dict = {}
+        if sp.mesh is not None:
+            mesh_dict = {Path(mp).name: mp for mp in dir_glob(str(sp.mesh))}
+        for path in pred_paths:
+            try:
+                dtype = str(read_xarray(path).dtype)
+
+                # the 8nm datasets yield predictions with 4nm grid spacing
+                if base_transform.scale[0] == 8.0:
+                    transform = scale(0.5, base_transform)
+                else:
+                    transform = base_transform
+                subsources = []
+                name = Path(path).name
+
+                if name in mesh_dict.keys():
+                    subsources = [
+                        MeshSource(
+                            name=name,
+                            path=mesh_dict[name],
+                            transform=base_transform,
+                            format="neuroglancer_legacy_mesh",
+                            ids=get_neuroglancer_legacy_mesh_ids(path),
+                        )
+                    ]
+                class_name, content_type = get_classname_and_content_type(name)
+                description = class_info[class_name].description
+
+                displaysettings = DisplaySettings(
+                    contrastLimits=ContrastLimits(), color=class_info[class_name].color
+                )
+
+                vs = VolumeSource(
+                    name=name,
+                    path=path,
+                    dataType=dtype,
+                    contentType=content_type,
+                    format=infer_container_type(path),
+                    transform=transform,
+                    description=description,
+                    displaySettings=displaysettings,
+                    subsources=subsources,
+                )
+                results.append(vs)
+            except zarr.errors.PathNotFoundError:
+                warnings.warn(f"Could not find anything at {path = }")
+        if sp.groundTruth is not None:
+            path = str(sp.groundTruth)
+            name = "gt"
+            dtype = str(read_xarray(path).dtype)
+            description = class_info[name].description
+            displaysettings = DisplaySettings(
+                contrastLimits=ContrastLimits(), color=class_info[name].color
+            )
+            vs = VolumeSource(
+                name=name,
+                path=path,
+                transform=base_transform,
+                dataType=dtype,
+                content_type="segmentation",
+                format=infer_container_type(path),
+                description=description,
+                displaySettings=displaysettings,
+            )
+            results.append(vs)
+        if sp.lm is not None:
+            lm_paths = dir_glob(str(sp.lm))
+            for path in lm_paths:
+                transform = SpatialTransform(**base_transform.dict())
+                try:
+                    attrs = dict(read(path).attrs)
+                    transform.scale = attrs["transform"]["scale"]
+                except:
+                    warnings.warn(f"Failed to infer scaling from data source at {path}")
+                dtype = str(read_xarray(path).dtype)
+                name = Path(path).name
+                description = class_info[name].description
+                displaysettings = DisplaySettings(
+                    contrastLimits=ContrastLimits(), color=class_info[name].color
+                )
+                vs = VolumeSource(
+                    name=name,
+                    path=path,
+                    transform=transform,
+                    dataType=dtype,
+                    content_type="lm",
+                    format=infer_container_type(path),
+                    description=description,
+                    displaySettings=displaysettings,
+                )
+                results.append(vs)
+    return results
 
 
 def process_raw_sources(
