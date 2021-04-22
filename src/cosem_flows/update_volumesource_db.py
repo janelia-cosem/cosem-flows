@@ -25,6 +25,7 @@ from fibsem_metadata.index import (
 )
 from fibsem_metadata.multiscale.cosem import SpatialTransform
 from pydantic import BaseModel, FilePath, DirectoryPath
+from collections import defaultdict
 
 hess_raw_dir = "/groups/hess/hesslab/HighResPaper_rawdata"
 cosem_raw_dir = "/groups/cosem/cosem/data"
@@ -135,20 +136,21 @@ def get_classname_and_content_type(
 def get_views_from_google_docs(credfile, spreadsheet_name, spreadsheet_page):
     sheet = GoogleSheetScraper(credfile, mode="r").client.open(spreadsheet_name)
     # convert the sheet to a dataframe
-    columns, *values = sheet.worksheets()[spreadsheet_page].get_all_values()
+    human_readable_columns, columns, *values = sheet.worksheets()[spreadsheet_page].get_all_values()
     df = pd.DataFrame(values, columns=columns)
     return views_from_dataframe(df)
 
 
-def views_from_dataframe(df: pd.DataFrame):
-    views = []
+def views_from_dataframe(df: pd.DataFrame) -> List[DatasetView]:
+    views: Dict[str, DatasetView] = defaultdict(list)
     for idx, r in df.iterrows():
-        datasetName: str = r["Dataset name"]
-        name: str = r["ROI Name (short)"]
-        description: str = r["ROI Description (long)"]
-        pos_str: str = r["XYZ Coordinates (nm)"]
+        datasetName: str = r["datasetName"]
+        name: str = r["name"]
+        description: str = r["description"]
+        pos_str: str = r["position"]
         pos: Optional[Sequence[int]]
-        scale_str: str = r["Cross-Section Scale"]
+        scale_str: str = r["scale"]
+        orientation = [float(f) for f in r["orientation"].split(',')]
         scale: Optional[float]
 
         if len(pos_str) > 0:
@@ -161,15 +163,15 @@ def views_from_dataframe(df: pd.DataFrame):
         else:
             scale = float(scale_str)
 
-        layers: List[str] = r["Layers"].split(", ")
+        layers: List[str] = r["volumeNames"].split(", ")
         for l in layers:
             class_name, _ = get_classname_and_content_type(l)
-            if class_name not in class_info:
+            if class_name not in class_info.classes:
                 print(
                     f"Warning: layer name {l} from the view called {name} was not found in the list of layers."
                 )
-        views.append(DatasetView(datasetName, name, description, pos, scale, layers))
-    return views
+        views[datasetName].append(DatasetView(name=name, description=description, position=pos, scale=scale, orientation=orientation, volumeNames=layers))
+    return dict(**views)
 
 
 def makeVolumeSource(
@@ -764,7 +766,7 @@ def create_sources(
                 path=path,
                 transform=base_transform,
                 dataType=dtype,
-                content_type="segmentation",
+                contentType="segmentation",
                 format=infer_container_type(path),
                 description=description,
                 displaySettings=displaysettings,
@@ -790,7 +792,7 @@ def create_sources(
                     path=path,
                     transform=transform,
                     dataType=dtype,
-                    content_type="lm",
+                    contentType="lm",
                     format=infer_container_type(path),
                     description=description,
                     displaySettings=displaysettings,

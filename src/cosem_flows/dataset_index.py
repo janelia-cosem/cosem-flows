@@ -1,9 +1,28 @@
 from .save_multiscale import typed_list_from_mongodb
-from fibsem_metadata.index import DatasetView, VolumeSource, DatasetIndex, MeshSource
+from fibsem_metadata.index import DatasetView, VolumeSource, DatasetIndex, MeshSource, DatasetViewCollection
 from pathlib import Path
-from fsspec import filesystem
+import fsspec
 from typing import List
 from dataclasses import replace
+import os
+import json
+import warnings
+
+
+def get_neuroglancer_legacy_mesh_ids(path: str):
+    """
+    Given a path to a directory with files called 1.ngmesh, 2.ngmesh, etc, return (1,2,...)
+    """
+    protocol = fsspec.utils.get_protocol(path)
+    fs = fsspec.filesystem(protocol)
+    return sorted(
+        tuple(
+            map(
+                lambda v: int(v.split(".")[0].split("/")[-1]),
+                fs.glob(os.path.join(path, "*.ngmesh")),
+            )
+        )
+    )
 
 
 def infer_container_type(path: str) -> str:
@@ -18,6 +37,8 @@ def infer_container_type(path: str) -> str:
 
     return containerType
 
+def URLify(protocol: str, path: str):
+    return protocol + '://' + path
 
 # mongodb variables
 un = "root"
@@ -27,59 +48,51 @@ db = "sources"
 mongo_addr = f"mongodb://{un}:{pw}@{addr}"
 
 
-def build_index(URL: str, any_volumes: bool =True):
+
+def build_index(URL: str, volume_registry: str):
     try:
         fs_protocol, root = URL.split("://")
     except ValueError:
         print(f"Your input {URL} could not be split into a protocol and a path")
         raise
-    fs = filesystem(fs_protocol)
+    fs = fsspec.filesystem(fs_protocol)
     dataset_name = Path(root).name
-
-    n5_paths = tuple(filter(fs.isdir, fs.glob(root + "/*n5*/*/*")))
-    precomputed_paths = tuple(filter(fs.isdir, fs.glob(root + "/neuroglancer/em/*")))
-    mesh_paths = tuple(filter(fs.isdir, fs.glob(root + "/neuroglancer/mesh/*")))
-
-    output_mesh_sources = [
-        MeshSource(
-            str(Path(mp).relative_to(root)),
-            Path(mp).stem,
-            dataset_name,
-            "neuroglancer_legacy_mesh",
-        )
-        for mp in mesh_paths
-    ]
-
-    volume_paths = (*n5_paths, *precomputed_paths)
-    volume_path_stems = tuple(Path(s).stem for s in volume_paths)
-
-    query = {"datasetName": dataset_name}
-    db_volume_sources: List[VolumeSource] = typed_list_from_mongodb(
-        mongo_addr, db, VolumeSource, query
-    )
-    if len(db_volume_sources) < 1:
-        raise ValueError(f"No sources found in the database using query {query}")
-
-    db_source_dict = {s.name: s for s in db_volume_sources}
+    registry_mapper = fsspec.get_mapper(os.path.join(volume_registry, dataset_name))
+    n5_paths = tuple(filter(fs.isdir, fs.glob(os.path.join(root, "*n5*/*/*"))))
+    precomputed_paths = tuple(filter(fs.isdir, fs.glob(os.path.join(root, "neuroglancer/em/*"))))
+    mesh_paths = {Path(p).stem: p for p in  filter(fs.isdir, fs.glob(os.path.join(root, "neuroglancer/mesh/*")))}
+    volume_paths = {Path(p).stem: p for p in (*n5_paths, *precomputed_paths)}
+    registry_volumes = []
+    for stem in volume_paths:
+        pth = os.path.join('sources', stem + '.json')
+        try:
+            json_payload = json.loads(registry_mapper[pth])
+        except KeyError:
+            warnings.warn(f'Could not find {pth}')
+            break
+        registry_volumes.append(VolumeSource(**json_payload))
     output_volume_sources: List[VolumeSource] = []
-    for sk, sv in db_source_dict.items():
-        if sk not in volume_path_stems:
+    for vj in registry_volumes:
+        if vj.name not in volume_paths:
             print(
                 f"Warning: could not find an extant volume on the filesystem matching this VolumeSource from the database: {sv}. This volume will not be added to the dataset index."
             )
         else:
-            input_source: VolumeSource = replace(sv)
-            vol_path = volume_paths[volume_path_stems.index(sk)]
-            input_source.path = str(Path(vol_path).relative_to(root))
-            input_source.containerType = infer_container_type(vol_path)
-            output_volume_sources.append(input_source)
-
-    db_views: List[DatasetView] = []
-    db_views = typed_list_from_mongodb(mongo_addr, db, DatasetView, query)
+            vol_path = volume_paths[vj.name]
+            vj.path = URLify(fs_protocol, vol_path)
+            vj.format = infer_container_type(vol_path)
+            subsources = []
+            if vj.name in mesh_paths:
+                subsources = [MeshSource(name=vj.name, path=URLify(fs_protocol, mesh_paths[vj.name]), transform=vj.transform, format='neuroglancer_legacy_mesh', ids=get_neuroglancer_legacy_mesh_ids(URLify(fs_protocol, mesh_paths[vj.name])))]
+            vj.subsources = subsources
+            output_volume_sources.append(vj)
+    
+    db_views: DatasetViewCollection = []    
+    db_views = DatasetViewCollection(**json.loads(registry_mapper['views.json'])).views
 
     accepted_views = []
     for v in db_views:
-        missing = set(v.volumeKeys) - set(db_source_dict.keys())
+        missing = set(v.volumeNames) - set(volume_paths.keys())
         if len(missing) > 0:
             print(
                 f"This view contains volumes: {missing} that could not be found in the volume source database and thus will not be included in the index: {v}"
@@ -90,7 +103,6 @@ def build_index(URL: str, any_volumes: bool =True):
     index = DatasetIndex(
         name=dataset_name,
         volumes=output_volume_sources,
-        meshes=output_mesh_sources,
         views=accepted_views,
     )
 
