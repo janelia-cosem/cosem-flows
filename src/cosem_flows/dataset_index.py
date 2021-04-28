@@ -67,10 +67,9 @@ def build_index(URL: str, volume_registry: str):
         pth = os.path.join('sources', stem + '.json')
         try:
             json_payload = json.loads(registry_mapper[pth])
+            registry_volumes.append(VolumeSource(**json_payload))
         except KeyError:
-            warnings.warn(f'Could not find {pth}')
-            break
-        registry_volumes.append(VolumeSource(**json_payload))
+            warnings.warn(f'Could not find {pth} for {dataset_name}')
     output_volume_sources: List[VolumeSource] = []
     for vj in registry_volumes:
         if vj.name not in volume_paths:
