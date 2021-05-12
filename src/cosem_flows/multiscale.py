@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Tuple, Optional, List, TypeVar, Sequence
-from fibsem_tools.io.io import access_precomputed, read_xarray
+from fibsem_tools.io.io import access_precomputed, read_xarray, split_path_at_suffix
 import numpy as np
 import os
 from xarray_multiscale.multiscale import multiscale, get_downscale_depth
@@ -14,13 +14,51 @@ import distributed
 import time
 from tqdm import tqdm
 from dask_janelia import get_cluster
-from fibsem_tools.io import populate_group
+from fibsem_tools.io import initialize_group
+from fibsem_tools.io.dask import store_blocks
 import click
 from pymongo import MongoClient
 import dask.array as da
 import toolz as tz
-
 import ast
+
+
+class Multiscales():
+    def __init__(self, arrays, name):
+        self.arrays: Dict[str, DataArray] = arrays
+        self.name = name
+        
+    def __repr__(self):
+        return str(self.arrays)
+    
+    def _prepare_store(self, store, chunks=None, **kwargs):
+        group_attrs = {
+            **cosem_ome.GroupMeta.fromDataArraySequence(tuple(self.arrays.values()), paths=tuple(self.arrays.keys())).asdict(),
+            **neuroglancer.GroupMeta.fromDataArraySequence(self.arrays.values()).asdict(),
+        }
+        
+        array_attrs = [cosem_ome.ArrayMeta.fromDataArray(m).asdict() for m in self.arrays.values()]
+        
+        if chunks is None:
+            _chunks = [tuple(c[0] for c in v.chunks) for v in self.arrays.values()]
+        else:
+            _chunks = (chunks,) * len(self.arrays.values())
+        store_group, store_arrays = initialize_group(
+            store,
+            self.name,
+            tuple(self.arrays.values()),
+            array_paths=tuple(self.arrays.keys()),
+            chunks=_chunks,
+            group_attrs=group_attrs,
+            array_attrs=array_attrs,
+            **kwargs
+        )
+        return store_group, store_arrays
+    
+    def store(self, store, chunks=None, **kwargs):
+        store_group, store_arrays = self._prepare_store(store, chunks, **kwargs)
+        storage_ops = store_blocks([v.data for v in self.arrays.values()], store_arrays)
+        return store_group, store_arrays, storage_ops
 
 
 class PythonLiteralOption(click.Option):
@@ -206,58 +244,6 @@ addr = "cosem.int.janelia.org"
 db = "sources"
 mongo_addr = f"mongodb://{un}:{pw}@{addr}"
 
-# this stuff is due to get promoted to module
-import dask.array as da
-import zarr
-import numpy as np
-import dask
-from dask.array.optimization import fuse_slice
-
-
-def store_block(source, target, region, block_info=None):
-    chunk_origin = block_info[0]["array-location"]
-    slices = tuple(slice(start, stop) for start, stop in chunk_origin)
-    if region:
-        slices = fuse_slice(region, slices)
-    target[slices] = source
-    return np.expand_dims(0, tuple(range(source.ndim)))
-
-
-def store_blocks(sources, targets, regions=None):
-    result = []
-
-    if isinstance(sources, dask.array.core.Array):
-        sources = [sources]
-        targets = [targets]
-
-    if len(sources) != len(targets):
-        raise ValueError(
-            "Different number of sources [%d] and targets [%d]"
-            % (len(sources), len(targets))
-        )
-
-    if isinstance(regions, tuple) or regions is None:
-        regions = [regions]
-
-    if len(sources) > 1 and len(regions) == 1:
-        regions *= len(sources)
-
-    if len(sources) != len(regions):
-        raise ValueError(
-            "Different number of sources [%d] and targets [%d] than regions [%d]"
-            % (len(sources), len(targets), len(regions))
-        )
-
-    for source, target, region in zip(sources, targets, regions):
-        out_chunks = tuple((1,) * len(c) for c in source.chunks)
-        result.append(
-            da.map_blocks(
-                store_block, source, target, region, chunks=out_chunks, dtype="int64"
-            )
-        )
-    return result
-
-
 @dataclass
 class MultiscaleSavePlan:
     mode: str
@@ -387,26 +373,18 @@ def ingest_source(
 def save_multiscale(
     source: str,
     target: str,
-    mutation: str,
     reduction: str,
     levels: Sequence[int],
     scale_factors: Sequence[int],
     input_chunks: Sequence[int],
     output_chunks: Sequence[int],
     num_workers: int,
-    distributed_loading: bool = True,
-    jpeg_quality=90,
     scale: Optional[Sequence[int]] = None,
+    storage_options: Dict[str, Any] = {}
 ):
-    from fibsem_tools.io.util import split_path_at_suffix
-    from fibsem_tools.io import read_xarray
-
-    path_outer, path_inner, suffix = split_path_at_suffix(
-        target, (".zarr", ".n5", ".precomputed")
-    )
-
-    mutation = mutations.get(mutation, lambda v: v)
-    darr: DataArray = mutation(read_xarray(source, chunks="auto"))
+    
+    target_path, target_key, target_suffix = split_path_at_suffix(target, (".n5", ".precomputed"))
+    darr: DataArray = read_xarray(source, chunks=input_chunks, name=target_key) 
     if scale:
         print("Overriding inferred coordinates with user-supplied scaling...")
         new_coords = {}
@@ -420,70 +398,23 @@ def save_multiscale(
 
     print(f"Source data: {darr.data}, found at {source}")
     reducer = reducers[reduction]
-    multi = multiscale(darr, reduction=reducer, scale_factors=scale_factors)
-    multi = tz.get(levels, multi)
+    multi: List[DataArray] = tz.get(levels, multiscale(darr, reduction=reducer, scale_factors=scale_factors))
     level_names = [f"s{level}" for level in range(len(multi))]
-    path, key, suffix = split_path_at_suffix(target, (".n5", ".precomputed"))
 
-    if suffix == ".n5":
+    if target_suffix == ".n5":
         print(f"Preparing the store {target}")
-
-        group_attrs = {
-            **cosem_ome.GroupMeta.fromDataArraySequence(
-                multi, paths=level_names
-            ).asdict(),
-            **neuroglancer.GroupMeta.fromDataArraySequence(multi).asdict(),
-            **{"source": source},
-        }
-        array_attrs = [cosem_ome.ArrayMeta.fromDataArray(m).asdict() for m in multi]
-        store_group, store_arrays = populate_group(
-            path,
-            key,
-            multi,
-            array_paths=level_names,
-            chunks=(output_chunks,) * len(multi),
-            group_attrs=group_attrs,
-            array_attrs=array_attrs,
-        )
-    elif suffix == ".precomputed":
-        group_path = ""
-        print(f"Preparing the store {target}")
-        if darr.dtype.name not in ("uint8"):
-            raise ValueError("Only uint8 supported at this time")
-        store_group = None
-        # create the precomputed arrays with transposed data
-        store_arrays = populate_precomputed(
-            target, [m.T for m in multi], level_names, jpeg_quality, output_chunks
-        )
-        # transpose to bring the precomputed arrays into numpy order
-        store_arrays = [arr.T for arr in store_arrays]
-    else:
+        multiscales = Multiscales({l : m for l, m in zip(level_names, multi)}, multi[0].name)
+        store_group, store_arrays, storage_op = multiscales.store(target_path, chunks=output_chunks, storage_options=storage_options, mode='a')
+    elif suffix == ".precomputed":        
         raise ValueError(
             f"Could not create array storage within the container type {suffix}"
         )
 
-    with get_cluster() as clust, Client(clust) as cl:
+    with get_cluster(threads_per_worker=4) as clust, Client(clust) as cl:
         print(cl.cluster.dashboard_link)
         start = time.perf_counter()
-        if distributed_loading:
-            cl.cluster.scale(num_workers)
-            result = cl.compute(
-                store_blocks([m.chunk(input_chunks).data for m in multi], store_arrays),
-                sync=True,
-            )
-        else:
-            result = sequential_multiscale(
-                darr.data,
-                store_arrays,
-                reducer,
-                scale_factors,
-                levels,
-                slab_size=input_chunks,
-                intermediate_chunks=(256,) * 3,
-                client=cl,
-                num_workers=num_workers,
-                streaming=False,
-            )
+        cl.cluster.scale(num_workers)
+        result = cl.compute(storage_op, sync=True)
         print(f"Completed in {time.perf_counter() - start}s")
 
     return result
