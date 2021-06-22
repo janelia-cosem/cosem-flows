@@ -40,14 +40,6 @@ def infer_container_type(path: str) -> str:
 def URLify(protocol: str, path: str):
     return protocol + '://' + path
 
-# mongodb variables
-un = "root"
-pw = "root"
-addr = "cosem.int.janelia.org"
-db = "sources"
-mongo_addr = f"mongodb://{un}:{pw}@{addr}"
-
-
 
 def build_index(URL: str, volume_registry: str):
     try:
@@ -63,39 +55,34 @@ def build_index(URL: str, volume_registry: str):
     mesh_paths = {Path(p).stem: p for p in  filter(fs.isdir, fs.glob(os.path.join(root, "neuroglancer/mesh/*")))}
     volume_paths = {Path(p).stem: p for p in (*n5_paths, *precomputed_paths)}
     registry_volumes = []
+    missing_from_registry = []
     for stem in volume_paths:
         pth = os.path.join('sources', stem + '.json')
         try:
             json_payload = json.loads(registry_mapper[pth])
             registry_volumes.append(VolumeSource(**json_payload))
         except KeyError:
-            warnings.warn(f'Could not find {pth} for {dataset_name}')
+            missing_from_registry.append(volume_paths[stem])
     output_volume_sources: List[VolumeSource] = []
     for vj in registry_volumes:
-        if vj.name not in volume_paths:
-            print(
-                f"Warning: could not find an extant volume on the filesystem matching this VolumeSource from the database: {sv}. This volume will not be added to the dataset index."
-            )
-        else:
-            vol_path = volume_paths[vj.name]
-            vj.path = URLify(fs_protocol, vol_path)
-            vj.format = infer_container_type(vol_path)
-            subsources = []
-            if vj.name in mesh_paths:
-                subsources = [MeshSource(name=vj.name, path=URLify(fs_protocol, mesh_paths[vj.name]), transform=vj.transform, format='neuroglancer_legacy_mesh', ids=get_neuroglancer_legacy_mesh_ids(URLify(fs_protocol, mesh_paths[vj.name])))]
-            vj.subsources = subsources
-            output_volume_sources.append(vj)
+        vol_path = volume_paths[vj.name]
+        vj.path = URLify(fs_protocol, vol_path)
+        vj.format = infer_container_type(vol_path)
+        subsources = []
+        if vj.name in mesh_paths:
+            subsources = [MeshSource(name=vj.name, path=URLify(fs_protocol, mesh_paths[vj.name]), transform=vj.transform, format='neuroglancer_legacy_mesh', ids=[])]
+        vj.subsources = subsources
+        output_volume_sources.append(vj)
     
     db_views: DatasetViewCollection = []    
     db_views = DatasetViewCollection(**json.loads(registry_mapper['views.json'])).views
 
     accepted_views = []
+    rejected_views = []
     for v in db_views:
         missing = set(v.volumeNames) - set(volume_paths.keys())
         if len(missing) > 0:
-            print(
-                f"This view contains volumes: {missing} that could not be found in the volume source database and thus will not be included in the index: {v}"
-            )
+            rejected_views.append(v)
         else:
             accepted_views.append(v)
 
@@ -105,4 +92,4 @@ def build_index(URL: str, volume_registry: str):
         views=accepted_views,
     )
 
-    return index
+    return index, (registry_volumes, missing_from_registry), (rejected_views, accepted_views)
